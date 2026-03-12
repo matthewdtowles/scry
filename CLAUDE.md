@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Scry is a Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gathering data from the Scryfall API into a PostgreSQL database. It is part of the larger "I Want My MTG" project — see the parent directory's CLAUDE.md for full-stack context.
+Scry is a Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gathering data from the Scryfall API into a PostgreSQL database. It is part of the larger "I Want My MTG" project. The web app lives in a separate repository: [i-want-my-mtg](https://github.com/matthewdtowles/i-want-my-mtg).
 
 ## Common Commands
 
@@ -27,13 +27,20 @@ cargo run -- retention            # Apply tiered retention to price_history, set
 cargo run -- truncate-history     # Truncate price_history (interactive confirm)
 ```
 
-Set `SCRY_LOG` env var for log verbosity (default: `scry=info`). Reads `DATABASE_URL` or individual `DB_*` vars from `.env` in the parent directory.
+Set `SCRY_LOG` env var for log verbosity (default: `scry=info`). Reads `DATABASE_URL` or individual `DB_*` vars from `.env`.
+
+### CI/CD
+
+GitHub Actions workflow (`.github/workflows/ci.yml`) on push to main:
+1. **test** — Runs `cargo test`
+2. **tag** — Creates GitHub release from Cargo.toml version
+3. **build** — Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`
 
 ### Docker
 
 ```bash
-docker compose run --rm etl cargo run -- ingest    # Run ETL in Docker
-docker compose run --rm etl cargo test              # Run tests in Docker
+docker build -t scry --target production .    # Build production image
+docker build -t scry-dev --target development .  # Build development image
 ```
 
 ## Architecture
@@ -87,7 +94,7 @@ src/
 
 ### Database
 
-Shares the same PostgreSQL database as the NestJS web app. Schema is in `../docker/postgres/init/001_complete_schema.sql`. Core tables: `card`, `set`, `price`, `price_history`, `legality`, `set_price`.
+Shares the same PostgreSQL database as the NestJS web app ([i-want-my-mtg](https://github.com/matthewdtowles/i-want-my-mtg)). Schema and migrations are managed in the web app repo. Core tables: `card`, `set`, `price`, `price_history`, `legality`, `set_price`.
 
 Uses SQLx with the `runtime-tokio-rustls` feature. The `ConnectionPool` struct wraps `PgPool` and provides helper methods for common query patterns (count, execute, fetch).
 
