@@ -1,0 +1,36 @@
+# Ignore environment configuration files
+.env
+.env.local
+.env.*.local
+.env.dev
+.env.development
+.env.test
+.env.prod
+.env.production
+
+# Ignore IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Ignore logs and temporary files
+*.log
+logs
+*.pid
+*.seed
+*.pid.lock
+
+# Ignore .DS_Store files (Mac)
+.DS_Store
+
+.notes/
+
+# Ignore Rust build and tool files
+**/target/
+**/*.rs.bk
+Cargo.toml.orig
+/.cargo/
+rustfmt.toml
+.clippy.toml
+**vendor**
