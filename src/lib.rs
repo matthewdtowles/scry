@@ -6,5 +6,3 @@ pub mod portfolio;
 pub mod price;
 pub mod set;
 pub mod utils;
-
-mod cli;

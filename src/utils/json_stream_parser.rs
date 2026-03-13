@@ -10,7 +10,7 @@ use tracing::{debug, error, warn};
 
 const BUF_READER_SIZE: usize = 64 * 1024;
 
-pub struct JsonStreamParser<T, P>
+pub(crate) struct JsonStreamParser<T, P>
 where
     P: JsonEventProcessor<T>,
 {
@@ -18,7 +18,7 @@ where
     _phantom: PhantomData<T>,
 }
 
-pub trait JsonEventProcessor<T> {
+pub(crate) trait JsonEventProcessor<T> {
     async fn process_event<R: tokio::io::AsyncRead + Unpin>(
         &mut self,
         event: JsonEvent,

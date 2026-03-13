@@ -1,11 +1,9 @@
 use scry::card::domain::{Card, CardRarity, Format, Legality, LegalityStatus};
 use scry::config::Config;
 use scry::database::ConnectionPool;
-use scry::price::domain::Price;
 use scry::set::domain::Set;
 
 use chrono::NaiveDate;
-use rust_decimal::Decimal;
 use std::sync::Arc;
 
 /// Create a fresh test database connection, create schema, return pool.
@@ -80,15 +78,5 @@ pub fn create_test_card(id: &str, set_code: &str) -> Card {
         side: None,
         sort_number: "000001".to_string(),
         type_line: "Creature — Test".to_string(),
-    }
-}
-
-pub fn create_test_price(card_id: &str, normal: f64, foil: f64) -> Price {
-    Price {
-        id: None,
-        card_id: card_id.to_string(),
-        normal: Some(Decimal::try_from(normal).unwrap()),
-        foil: Some(Decimal::try_from(foil).unwrap()),
-        date: NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
     }
 }
