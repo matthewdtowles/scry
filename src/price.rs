@@ -1,6 +1,6 @@
+pub mod domain;
+pub mod repository;
 pub mod service;
-mod domain;
-mod repository;
 mod event_processor;
 mod historical_event_processor;
 

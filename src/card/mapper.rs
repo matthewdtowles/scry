@@ -180,3 +180,118 @@ impl CardMapper {
             .collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn create_valid_card_json() -> Value {
+        json!({
+            "uuid": "abc12345-6789-0abc-def0-123456789abc",
+            "name": "Lightning Bolt",
+            "setCode": "LEA",
+            "number": "161",
+            "type": "Instant",
+            "rarity": "common",
+            "manaCost": "{R}",
+            "text": "Lightning Bolt deals 3 damage to any target.",
+            "artist": "Christopher Rush",
+            "isAlternative": false,
+            "isReserved": false,
+            "isOnlineOnly": false,
+            "isOversized": false,
+            "language": "English",
+            "layout": "normal",
+            "identifiers": {
+                "scryfallId": "ab12cd34-5678-90ef-abcd-ef1234567890"
+            },
+            "finishes": ["nonfoil"],
+            "boosterTypes": ["default"]
+        })
+    }
+
+    #[test]
+    fn test_map_json_to_card() {
+        let json = create_valid_card_json();
+        let card = CardMapper::map_json_to_card(&json).unwrap();
+        assert_eq!(card.name, "Lightning Bolt");
+        assert_eq!(card.set_code, "lea");
+        assert_eq!(card.number, "161");
+        assert_eq!(card.type_line, "Instant");
+        assert_eq!(card.rarity, CardRarity::Common);
+        assert_eq!(card.mana_cost, Some("{r}".to_string()));
+        assert!(card.has_non_foil);
+        assert!(!card.has_foil);
+    }
+
+    #[test]
+    fn test_map_json_to_card_missing_uuid_fails() {
+        let mut json = create_valid_card_json();
+        json.as_object_mut().unwrap().remove("uuid");
+        assert!(CardMapper::map_json_to_card(&json).is_err());
+    }
+
+    #[test]
+    fn test_map_to_cards_filters_online_only() {
+        let online_card = json!({
+            "uuid": "online-1234-5678-90ab-cdef12345678",
+            "name": "Online Card",
+            "setCode": "TST",
+            "number": "1",
+            "type": "Creature",
+            "rarity": "common",
+            "isOnlineOnly": true,
+            "isAlternative": false,
+            "isReserved": false,
+            "isOversized": false,
+            "language": "English",
+            "layout": "normal",
+            "identifiers": { "scryfallId": "ab12cd34-5678-90ef-abcd-ef1234567890" },
+            "finishes": ["nonfoil"],
+            "boosterTypes": ["default"]
+        });
+        let normal_card = create_valid_card_json();
+        let set_data = json!({
+            "data": {
+                "cards": [online_card, normal_card]
+            }
+        });
+        let cards = CardMapper::map_to_cards(set_data).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].name, "Lightning Bolt");
+    }
+
+    #[test]
+    fn test_has_foil_from_finishes() {
+        let json = json!({"finishes": ["foil"]});
+        assert!(CardMapper::has_foil(&json));
+    }
+
+    #[test]
+    fn test_has_non_foil_from_finishes() {
+        let json = json!({"finishes": ["nonfoil"]});
+        assert!(CardMapper::has_non_foil(&json));
+    }
+
+    #[test]
+    fn test_has_foil_from_finishes_absent() {
+        let json = json!({"finishes": ["nonfoil"]});
+        assert!(!CardMapper::has_foil(&json));
+    }
+
+    #[test]
+    fn test_extract_legalities() {
+        let legalities = json!({
+            "standard": "legal",
+            "commander": "banned",
+            "vintage": "restricted",
+            "alchemy": "not_legal"
+        });
+        let result = CardMapper::extract_legalities(&legalities, "card-1").unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().any(|l| l.format == Format::Standard));
+        assert!(result.iter().any(|l| l.format == Format::Commander));
+        assert!(result.iter().any(|l| l.format == Format::Vintage));
+    }
+}

@@ -41,3 +41,54 @@ impl SetMapper {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+    use serde_json::json;
+
+    fn create_valid_set_json() -> Value {
+        json!({
+            "code": "LEA",
+            "keyruneCode": "LEA",
+            "name": "Limited Edition Alpha",
+            "releaseDate": "1993-08-05",
+            "type": "core",
+            "block": "Core Set",
+            "parentCode": "LEA",
+            "isOnlineOnly": false,
+            "isForeignOnly": false
+        })
+    }
+
+    #[test]
+    fn test_map_mtg_json_to_set() {
+        let json = create_valid_set_json();
+        let set = SetMapper::map_mtg_json_to_set(&json).unwrap();
+        assert_eq!(set.code, "lea");
+        assert_eq!(set.name, "Limited Edition Alpha");
+        assert_eq!(set.keyrune_code, "lea");
+        assert_eq!(set.set_type, "core");
+        assert_eq!(set.block, Some("Core Set".to_string()));
+        assert_eq!(set.parent_code, Some("lea".to_string()));
+        assert_eq!(
+            set.release_date,
+            NaiveDate::from_ymd_opt(1993, 8, 5).unwrap()
+        );
+        assert!(!set.is_online_only);
+        assert!(!set.is_foreign_only);
+        assert_eq!(set.base_size, 0);
+        assert_eq!(set.total_size, 0);
+    }
+
+    #[test]
+    fn test_map_mtg_json_to_set_missing_field_fails() {
+        let json = json!({
+            "code": "TST",
+            "name": "Test Set"
+            // missing keyruneCode, releaseDate, type
+        });
+        assert!(SetMapper::map_mtg_json_to_set(&json).is_err());
+    }
+}

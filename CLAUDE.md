@@ -9,8 +9,8 @@ Scry is a Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gatheri
 ## Common Commands
 
 ```bash
-cargo test                        # Run all tests
-cargo test card::                 # Run tests in a specific module
+cargo test                        # Run unit tests only (integration tests are #[ignore]d)
+cargo test card::                 # Run unit tests in a specific module
 cargo build --release             # Production build
 cargo run -- ingest               # Full ingest: sets, cards, prices + post-ingest prune/updates
 cargo run -- ingest -s            # Ingest sets only
@@ -32,9 +32,22 @@ Set `SCRY_LOG` env var for log verbosity (default: `scry=info`). Reads `DATABASE
 ### CI/CD
 
 GitHub Actions workflow (`.github/workflows/ci.yml`) on push to main:
-1. **test** — Runs `cargo test`
+1. **test** — Runs `cargo test -- --include-ignored` (unit + integration)
 2. **tag** — Creates GitHub release from Cargo.toml version
 3. **build** — Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`
+
+### Integration Tests
+
+Integration tests are marked `#[ignore]` so `cargo test` skips them (they require a running PostgreSQL instance). To run locally:
+
+```bash
+./scripts/test-integ.sh                             # Run all tests (starts/stops test DB automatically)
+./scripts/test-integ.sh --test set_repository_test  # Run a single integration test file
+cargo test -- --include-ignored                     # Run all tests (if DB is already running)
+cargo test -- --ignored                             # Run only integration tests (if DB is already running)
+```
+
+The script starts a Postgres container on port 5433, runs tests with `--include-ignored`, and tears down on exit. CI provisions its own Postgres service container.
 
 ### Docker
 

@@ -9,6 +9,22 @@ on:
 jobs:
     test:
         runs-on: ubuntu-latest
+        services:
+            postgres:
+                image: postgres:18
+                env:
+                    POSTGRES_USER: scry_test
+                    POSTGRES_PASSWORD: scry_test
+                    POSTGRES_DB: scry_test
+                ports:
+                    - 5432:5432
+                options: >-
+                    --health-cmd "pg_isready -U scry_test"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+        env:
+            TEST_DATABASE_URL: postgresql://scry_test:scry_test@localhost:5432/scry_test?sslmode=disable
         steps:
             - name: Checkout
               uses: actions/checkout@v4
@@ -27,7 +43,7 @@ jobs:
                   restore-keys: ${{ runner.os }}-cargo-
 
             - name: Run tests
-              run: cargo test
+              run: cargo test -- --include-ignored
 
     tag:
         needs: test

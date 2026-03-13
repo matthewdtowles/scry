@@ -1,6 +1,6 @@
 [package]
 name = "scry"
-version = "5.3.1"
+version = "5.4.0"
 edition = "2021"
 description = "MTG data ETL management tool"
 
@@ -31,3 +31,7 @@ tokio-util = { version = "0.7.15", features = ["compat", "io"] }
 [dependencies.clap]
 version = "4.0"
 features = ["derive"]
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full", "test-util"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres"] }

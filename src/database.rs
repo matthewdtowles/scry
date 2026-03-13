@@ -54,7 +54,7 @@ impl ConnectionPool {
 
 
     pub async fn execute_raw(&self, query: &str) -> Result<()> {
-        sqlx::query(query).execute(&*self.pool).await?;
+        sqlx::raw_sql(query).execute(&*self.pool).await?;
         Ok(())
     }
 
