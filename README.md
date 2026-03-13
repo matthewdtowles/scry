@@ -111,6 +111,13 @@ docker run --rm -e DATABASE_URL=... scry ingest   # Run with Docker
 | `DATABASE_URL` | PostgreSQL connection string | Required |
 | `SCRY_LOG` | Log verbosity | `scry=info` |
 
+## Crate Structure
+
+Scry is a CLI binary, but the project uses both `main.rs` and `lib.rs`. The binary entry point is `main.rs`, which owns CLI-specific wiring (`cli/` module, dependency setup, and command dispatch). The `lib.rs` re-exports all other modules as a library crate so that integration tests in `tests/` can import them via `use scry::...`. Without `lib.rs`, Cargo's integration tests would have no access to internal types like repositories and domain models.
+
+- **`main.rs`** — Binary entry point. Declares `mod cli` (not shared with the library) and wires up the dependency graph.
+- **`lib.rs`** — Library crate. Re-exports shared modules (`card`, `set`, `price`, `config`, `database`, etc.) for use by integration tests.
+
 ## Testing
 
 ### Running Tests
