@@ -113,15 +113,50 @@ docker run --rm -e DATABASE_URL=... scry ingest   # Run with Docker
 
 ## Testing
 
+### Running Tests
+
 ```bash
-cargo test                # Run all tests
-cargo test card::         # Run tests in a specific module
+cargo test                                          # Unit tests only (integration tests are skipped)
+cargo test card::                                   # Unit tests in a specific module
+./scripts/test-integ.sh                             # All tests (starts/stops test DB automatically)
+./scripts/test-integ.sh --test set_repository_test  # Single integration test file
+cargo test -- --include-ignored                     # All tests (if DB is already running)
+cargo test -- --ignored                             # Integration tests only (if DB is already running)
+```
+
+### Adding Tests
+
+**Unit tests** live inline in `src/` files inside a `#[cfg(test)] mod tests` block. These run with `cargo test` and should not require any external services.
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_example() {
+        assert!(true);
+    }
+}
+```
+
+**Integration tests** live in the `tests/` directory and run against a real PostgreSQL database. Each integration test must be marked `#[ignore]` so `cargo test` skips it. Use `tests/common/mod.rs` helpers for database setup and test data.
+
+```rust
+mod common;
+
+#[tokio::test]
+#[ignore]
+async fn test_example_repository() {
+    let db = common::setup_test_db().await;
+    // ...
+}
 ```
 
 ## Build & Deploy
 
 CI/CD via GitHub Actions (`.github/workflows/ci.yml`) on push to main:
-1. Runs `cargo test`
+1. Runs `cargo test -- --include-ignored` (unit + integration)
 2. Creates GitHub release from `Cargo.toml` version
 3. Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`
 

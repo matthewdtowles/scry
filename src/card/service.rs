@@ -333,7 +333,7 @@ impl CardService {
         Ok(total)
     }
 
-    fn merge_and_filter_cards(mut cards: Vec<Card>) -> Vec<Card> {
+    pub(crate) fn merge_and_filter_cards(mut cards: Vec<Card>) -> Vec<Card> {
         let mut id_index: HashMap<String, usize> = HashMap::new();
         for (i, c) in cards.iter().enumerate() {
             id_index.insert(c.id.clone(), i);
@@ -366,5 +366,84 @@ impl CardService {
             .filter(|(idx, _)| keep_mask[*idx])
             .map(|(_, c)| c)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::card::domain::CardRarity;
+
+    fn create_test_card(id: &str) -> Card {
+        Card {
+            artist: Some("Artist".to_string()),
+            has_foil: true,
+            has_non_foil: true,
+            id: id.to_string(),
+            img_src: "a/b/test.jpg".to_string(),
+            in_main: true,
+            is_alternative: false,
+            is_reserved: false,
+            is_online_only: false,
+            is_oversized: false,
+            language: "English".to_string(),
+            layout: "normal".to_string(),
+            legalities: vec![],
+            mana_cost: Some("{2}{U}".to_string()),
+            name: "Test Card".to_string(),
+            number: "1".to_string(),
+            oracle_text: Some("Test text".to_string()),
+            other_face_ids: None,
+            rarity: CardRarity::Rare,
+            set_code: "tst".to_string(),
+            side: None,
+            sort_number: "000001".to_string(),
+            type_line: "Creature — Test".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_merge_and_filter_removes_online_only() {
+        let mut card = create_test_card("c1");
+        card.is_online_only = true;
+        let normal = create_test_card("c2");
+        let result = CardService::merge_and_filter_cards(vec![card, normal]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "c2");
+    }
+
+    #[test]
+    fn test_merge_and_filter_removes_side_b() {
+        let card_a = create_test_card("c1");
+        let mut card_b = create_test_card("c2");
+        card_b.side = Some("b".to_string());
+        let result = CardService::merge_and_filter_cards(vec![card_a, card_b]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "c1");
+    }
+
+    #[test]
+    fn test_merge_and_filter_merges_split_card_mana_costs() {
+        let mut card_a = create_test_card("split-a");
+        card_a.layout = "split".to_string();
+        card_a.mana_cost = Some("{1}{R}".to_string());
+        card_a.other_face_ids = Some(vec!["split-b".to_string()]);
+        card_a.side = None;
+
+        // Side "b" card — won't be filtered by should_filter (side=None to keep it in the list),
+        // but will be removed by the split merge logic (keep_mask[j] = false)
+        let mut card_b = create_test_card("split-b");
+        card_b.layout = "normal".to_string(); // not a split card itself
+        card_b.mana_cost = Some("{2}{G}".to_string());
+        card_b.other_face_ids = None;
+        card_b.side = None;
+
+        let result = CardService::merge_and_filter_cards(vec![card_a, card_b]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "split-a");
+        assert_eq!(
+            result[0].mana_cost,
+            Some("{1}{R} // {2}{G}".to_string())
+        );
     }
 }
