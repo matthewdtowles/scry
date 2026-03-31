@@ -70,3 +70,113 @@ async fn test_delete_set_batch() {
     let empty = set_repo.fetch_empty_sets().await.unwrap();
     assert!(!empty.iter().any(|s| s.code == "s05"));
 }
+
+#[tokio::test]
+#[ignore]
+async fn test_update_parent_codes_breaks_circular_references() {
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db.clone());
+
+    // tsp and tsb point at each other (circular reference from Scryfall)
+    let mut tsp = common::create_test_set("pc01");
+    tsp.name = "Time Spiral".to_string();
+    tsp.block = Some("Time Spiral".to_string());
+    tsp.parent_code = Some("pc02".to_string());
+    tsp.base_size = 301;
+    tsp.release_date = chrono::NaiveDate::from_ymd_opt(2006, 10, 6).unwrap();
+
+    let mut tsb = common::create_test_set("pc02");
+    tsb.name = "Time Spiral Timeshifted".to_string();
+    tsb.block = Some("Time Spiral".to_string());
+    tsb.parent_code = Some("pc01".to_string());
+    tsb.base_size = 121;
+    tsb.release_date = chrono::NaiveDate::from_ymd_opt(2006, 10, 6).unwrap();
+
+    repo.save_sets(&[tsp, tsb]).await.unwrap();
+    repo.update_is_main().await.unwrap();
+    repo.update_parent_codes().await.unwrap();
+
+    // After normalization, canonical parent (pc01 = "Time Spiral") should have NULL parent_code
+    let canonical_has_no_parent = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'pc01' AND parent_code IS NULL")
+        .await
+        .unwrap();
+    assert_eq!(
+        canonical_has_no_parent, 1,
+        "Canonical parent pc01 should have NULL parent_code"
+    );
+
+    // pc02 should point to pc01
+    let child_points_to_canonical = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'pc02' AND parent_code = 'pc01'")
+        .await
+        .unwrap();
+    assert_eq!(
+        child_points_to_canonical, 1,
+        "pc02 should point to canonical parent pc01"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_update_parent_codes_resolves_grandchild_chains() {
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db.clone());
+
+    // otj is the root, big is a child, pbig is a grandchild
+    let mut otj = common::create_test_set("pc10");
+    otj.name = "Outlaws of Thunder Junction".to_string();
+    otj.block = Some("Outlaws of Thunder Junction".to_string());
+    otj.base_size = 261;
+    otj.release_date = chrono::NaiveDate::from_ymd_opt(2024, 4, 19).unwrap();
+
+    let mut big = common::create_test_set("pc11");
+    big.name = "The Big Score".to_string();
+    big.block = Some("Outlaws of Thunder Junction".to_string());
+    big.parent_code = Some("pc10".to_string());
+    big.base_size = 30;
+    big.release_date = chrono::NaiveDate::from_ymd_opt(2024, 4, 19).unwrap();
+
+    let mut pbig = common::create_test_set("pc12");
+    pbig.name = "The Big Score Promos".to_string();
+    pbig.block = Some("Outlaws of Thunder Junction".to_string());
+    pbig.parent_code = Some("pc11".to_string()); // grandchild: points to big, not otj
+    pbig.base_size = 0;
+    pbig.is_main = false;
+    pbig.set_type = "promo".to_string();
+    pbig.release_date = chrono::NaiveDate::from_ymd_opt(2024, 4, 19).unwrap();
+
+    repo.save_sets(&[otj, big, pbig]).await.unwrap();
+    repo.update_is_main().await.unwrap();
+    repo.update_parent_codes().await.unwrap();
+
+    // After normalization, root pc10 should have NULL parent_code
+    let root_has_no_parent = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'pc10' AND parent_code IS NULL")
+        .await
+        .unwrap();
+    assert_eq!(
+        root_has_no_parent, 1,
+        "Root pc10 should have NULL parent_code"
+    );
+
+    // pc11 should point to root pc10
+    let child_points_to_root = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'pc11' AND parent_code = 'pc10'")
+        .await
+        .unwrap();
+    assert_eq!(
+        child_points_to_root, 1,
+        "pc11 should point to root pc10"
+    );
+
+    // Grandchild pc12 should point to root pc10, not intermediate pc11
+    let grandchild_points_to_root = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'pc12' AND parent_code = 'pc10'")
+        .await
+        .unwrap();
+    assert_eq!(
+        grandchild_points_to_root, 1,
+        "Grandchild pc12 should point to root pc10, not intermediate pc11"
+    );
+}

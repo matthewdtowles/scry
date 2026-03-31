@@ -295,7 +295,28 @@ impl SetRepository {
     }
 
     pub async fn update_parent_codes(&self) -> Result<i64> {
-        // Step 1: Set parent_code where a set's name matches the block name
+        // Step 1: Break circular parent references.
+        // When two sets point at each other, clear parent_code on the
+        // canonical parent (the one whose name matches the block name,
+        // or the earliest main set if no name match).
+        let qb_break_cycles = QueryBuilder::new(
+            "UPDATE \"set\" s
+            SET parent_code = NULL
+            FROM \"set\" other
+            WHERE s.parent_code = other.code
+              AND other.parent_code = s.code
+              AND s.block IS NOT NULL
+              AND s.name = s.block",
+        );
+        let cycles_broken = self.db.execute_query_builder(qb_break_cycles).await?;
+        if cycles_broken > 0 {
+            warn!(
+                "Broke {} circular parent_code reference(s)",
+                cycles_broken
+            );
+        }
+
+        // Step 2: Set parent_code where a set's name matches the block name
         let qb_name_match = QueryBuilder::new(
             "UPDATE \"set\" s
             SET parent_code = p.code
@@ -308,7 +329,7 @@ impl SetRepository {
         );
         let name_matched = self.db.execute_query_builder(qb_name_match).await?;
 
-        // Step 2: For blocks where no set name matches the block name,
+        // Step 3: For blocks where no set name matches the block name,
         // use the earliest is_main set as the parent
         let qb_earliest = QueryBuilder::new(
             "UPDATE \"set\" s
@@ -330,10 +351,10 @@ impl SetRepository {
         );
         let earliest_matched = self.db.execute_query_builder(qb_earliest).await?;
 
-        // Step 3: Normalize parent_codes within each block so all sets
+        // Step 4: Normalize parent_codes within each block so all sets
         // point to the same canonical parent (earliest main set).
         // Fixes cases where Scryfall sets parent_code to a non-first
-        // set in the block (e.g., AER promos → AER instead of KLD).
+        // set in the block (e.g., AER promos -> AER instead of KLD).
         let qb_normalize = QueryBuilder::new(
             "UPDATE \"set\" s
             SET parent_code = first.code
@@ -350,7 +371,37 @@ impl SetRepository {
         );
         let normalized = self.db.execute_query_builder(qb_normalize).await?;
 
-        Ok(name_matched + earliest_matched + normalized)
+        // Step 5: Resolve grandchild chains. Sets whose parent_code
+        // points to a set that itself has a parent_code should point
+        // to the root ancestor instead. Uses a recursive CTE to walk
+        // the chain up to 10 levels deep.
+        let qb_flatten = QueryBuilder::new(
+            "WITH RECURSIVE ancestors AS (
+                SELECT code, parent_code, code AS root, 0 AS depth
+                FROM \"set\"
+                WHERE parent_code IS NULL
+                UNION ALL
+                SELECT s.code, s.parent_code, a.root, a.depth + 1
+                FROM \"set\" s
+                JOIN ancestors a ON s.parent_code = a.code
+                WHERE a.depth < 10
+            )
+            UPDATE \"set\" s
+            SET parent_code = a.root
+            FROM ancestors a
+            WHERE s.code = a.code
+              AND a.root != s.code
+              AND s.parent_code IS DISTINCT FROM a.root",
+        );
+        let flattened = self.db.execute_query_builder(qb_flatten).await?;
+        if flattened > 0 {
+            warn!(
+                "Flattened {} grandchild parent_code chain(s)",
+                flattened
+            );
+        }
+
+        Ok(cycles_broken + name_matched + earliest_matched + normalized + flattened)
     }
 
     pub async fn update_is_main(&self) -> Result<i64> {
