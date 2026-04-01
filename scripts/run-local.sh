@@ -28,7 +28,9 @@ if ! docker network inspect i-want-my-mtg_default > /dev/null 2>&1; then
     exit 1
 fi
 
-echo "Building and running: scry $*"
+VERSION=$(grep '^version' "$PROJECT_ROOT/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
+echo "scry v${VERSION} — building and running: scry $*"
+docker compose build etl
 docker compose run --rm etl cargo run -- "$@"
 
 # Clean up dangling images from builds

@@ -295,7 +295,22 @@ impl SetRepository {
     }
 
     pub async fn update_parent_codes(&self) -> Result<i64> {
-        // Step 1: Break circular parent references.
+        // Step 1: One-off fixes for sets Scryfall misclassifies.
+        // Must run before normalization so canonical-parent selection
+        // sees correct block/parent_code values.
+        // TSB (Time Spiral Timeshifted) belongs to the Time Spiral block
+        // with parent tsp. Scryfall has tsp and tsb pointing at each other.
+        let qb_fixups = QueryBuilder::new(
+            "UPDATE \"set\"
+            SET block = 'Time Spiral',
+                parent_code = 'tsp'
+            WHERE code = 'tsb'
+              AND (block IS DISTINCT FROM 'Time Spiral'
+                OR parent_code IS DISTINCT FROM 'tsp')",
+        );
+        let fixups = self.db.execute_query_builder(qb_fixups).await?;
+
+        // Step 2: Break circular parent references.
         // When two sets point at each other, clear parent_code on the
         // canonical parent (the one whose name matches the block name).
         let qb_break_cycles = QueryBuilder::new(
@@ -315,7 +330,7 @@ impl SetRepository {
             );
         }
 
-        // Step 2: For each block, find the canonical parent (earliest
+        // Step 3: For each block, find the canonical parent (earliest
         // main set by release_date). Set parent_code for ALL other sets
         // in that block to point to it. The canonical parent gets NULL.
         let qb_assign_block = QueryBuilder::new(
@@ -324,7 +339,7 @@ impl SetRepository {
                 FROM \"set\"
                 WHERE block IS NOT NULL
                   AND is_main = true
-                ORDER BY block, release_date ASC, code ASC
+                ORDER BY block, release_date ASC, base_size DESC, code ASC
             )
             UPDATE \"set\" s
             SET parent_code = c.code
@@ -342,7 +357,7 @@ impl SetRepository {
                 FROM \"set\"
                 WHERE block IS NOT NULL
                   AND is_main = true
-                ORDER BY block, release_date ASC, code ASC
+                ORDER BY block, release_date ASC, base_size DESC, code ASC
             )
             UPDATE \"set\" s
             SET parent_code = NULL
@@ -352,7 +367,7 @@ impl SetRepository {
         );
         let canonical_cleared = self.db.execute_query_builder(qb_clear_canonical).await?;
 
-        // Step 3: Adopt orphans. Sets without a block but whose
+        // Step 4: Adopt orphans. Sets without a block but whose
         // parent_code points to a set in a block should point to
         // that block's canonical parent instead.
         let qb_adopt = QueryBuilder::new(
@@ -361,7 +376,7 @@ impl SetRepository {
                 FROM \"set\"
                 WHERE block IS NOT NULL
                   AND is_main = true
-                ORDER BY block, release_date ASC, code ASC
+                ORDER BY block, release_date ASC, base_size DESC, code ASC
             )
             UPDATE \"set\" s
             SET parent_code = c.code
@@ -373,21 +388,9 @@ impl SetRepository {
         );
         let adopted = self.db.execute_query_builder(qb_adopt).await?;
 
-        // Step 4: One-off fixes for sets Scryfall misclassifies.
-        // TSB (Time Spiral Timeshifted) belongs to the Time Spiral block.
-        let qb_fixups = QueryBuilder::new(
-            "UPDATE \"set\"
-            SET block = 'Time Spiral',
-                parent_code = 'tsp'
-            WHERE code = 'tsb'
-              AND (block IS DISTINCT FROM 'Time Spiral'
-                OR parent_code IS DISTINCT FROM 'tsp')",
-        );
-        let fixups = self.db.execute_query_builder(qb_fixups).await?;
-
         let total = cycles_broken + block_assigned + canonical_cleared + adopted + fixups;
-        info!("Updated parent_codes: {} block-assigned, {} canonical cleared, {} adopted, {} cycles broken, {} fixups",
-            block_assigned, canonical_cleared, adopted, cycles_broken, fixups);
+        info!("Updated parent_codes: {} fixups, {} cycles broken, {} block-assigned, {} canonical cleared, {} adopted",
+            fixups, cycles_broken, block_assigned, canonical_cleared, adopted);
         Ok(total)
     }
 
