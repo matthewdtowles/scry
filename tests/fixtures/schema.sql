@@ -6,24 +6,21 @@ SELECT pg_advisory_lock(42);
 
 -- Enum types (use DO blocks to handle pre-existing types)
 DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'card_rarity_enum') THEN
-        CREATE TYPE card_rarity_enum AS ENUM ('common', 'uncommon', 'rare', 'mythic', 'bonus', 'special');
-    END IF;
+    CREATE TYPE card_rarity_enum AS ENUM ('common', 'uncommon', 'rare', 'mythic', 'bonus', 'special');
+EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'format_enum') THEN
-        CREATE TYPE format_enum AS ENUM (
-            'standard', 'commander', 'modern', 'legacy', 'vintage',
-            'brawl', 'explorer', 'historic', 'oathbreaker', 'pauper', 'pioneer'
-        );
-    END IF;
+    CREATE TYPE format_enum AS ENUM (
+        'standard', 'commander', 'modern', 'legacy', 'vintage',
+        'brawl', 'explorer', 'historic', 'oathbreaker', 'pauper', 'pioneer'
+    );
+EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'legality_status_enum') THEN
-        CREATE TYPE legality_status_enum AS ENUM ('legal', 'banned', 'restricted');
-    END IF;
+    CREATE TYPE legality_status_enum AS ENUM ('legal', 'banned', 'restricted');
+EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 -- Set table
