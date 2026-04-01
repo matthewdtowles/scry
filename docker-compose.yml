@@ -4,7 +4,7 @@ services:
       context: .
       target: development
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - DATABASE_URL=${DATABASE_URL}
       - SCRY_LOG=${SCRY_LOG}
     env_file:
       - .env
