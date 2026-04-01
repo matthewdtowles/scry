@@ -1,13 +1,16 @@
+# Runs Scry against i-want-my-mtg's postgres container.
+# Prerequisites:
+#   1. Clone and start postgres from https://github.com/matthewdtowles/i-want-my-mtg:
+#      cd ../i-want-my-mtg && docker compose up -d postgres
+#   2. Copy .env.example to .env and fill in your DB credentials.
 services:
   etl:
     build:
       context: .
       target: development
     environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - SCRY_LOG=${SCRY_LOG}
-    env_file:
-      - .env
+      - DATABASE_URL
+      - SCRY_LOG
     networks:
       - i-want-my-mtg
     restart: 'no'

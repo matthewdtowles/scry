@@ -180,3 +180,59 @@ async fn test_update_parent_codes_resolves_grandchild_chains() {
         "Grandchild pc12 should point to root pc10, not intermediate pc11"
     );
 }
+
+#[tokio::test]
+#[ignore]
+async fn test_update_parent_codes_time_spiral_fixup() {
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db.clone());
+
+    // Use real tsp/tsb codes to exercise the one-off fixup SQL
+    let mut tsp = common::create_test_set("tsp");
+    tsp.name = "Time Spiral".to_string();
+    tsp.block = Some("Time Spiral".to_string());
+    tsp.parent_code = Some("tsb".to_string());
+    tsp.base_size = 301;
+    tsp.release_date = chrono::NaiveDate::from_ymd_opt(2006, 10, 6).unwrap();
+
+    let mut tsb = common::create_test_set("tsb");
+    tsb.name = "Time Spiral Timeshifted".to_string();
+    tsb.block = None;
+    tsb.parent_code = Some("tsp".to_string());
+    tsb.base_size = 121;
+    tsb.release_date = chrono::NaiveDate::from_ymd_opt(2006, 10, 6).unwrap();
+
+    repo.save_sets(&[tsp, tsb]).await.unwrap();
+    repo.update_is_main().await.unwrap();
+    repo.update_parent_codes().await.unwrap();
+
+    // tsp is the canonical parent — should have NULL parent_code
+    let tsp_no_parent = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'tsp' AND parent_code IS NULL")
+        .await
+        .unwrap();
+    assert_eq!(
+        tsp_no_parent, 1,
+        "tsp should have NULL parent_code as canonical parent"
+    );
+
+    // tsb should point to tsp, not the other way around
+    let tsb_points_to_tsp = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'tsb' AND parent_code = 'tsp'")
+        .await
+        .unwrap();
+    assert_eq!(
+        tsb_points_to_tsp, 1,
+        "tsb should point to tsp"
+    );
+
+    // tsb should be in the Time Spiral block after fixup
+    let tsb_in_block = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'tsb' AND block = 'Time Spiral'")
+        .await
+        .unwrap();
+    assert_eq!(
+        tsb_in_block, 1,
+        "tsb should be in the Time Spiral block"
+    );
+}
