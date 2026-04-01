@@ -77,26 +77,26 @@ async fn test_update_parent_codes_breaks_circular_references() {
     let db = common::setup_test_db().await;
     let repo = SetRepository::new(db.clone());
 
-    // tsp and tsb point at each other (circular reference from Scryfall)
-    let mut tsp = common::create_test_set("pc01");
-    tsp.name = "Time Spiral".to_string();
-    tsp.block = Some("Time Spiral".to_string());
-    tsp.parent_code = Some("pc02".to_string());
-    tsp.base_size = 301;
-    tsp.release_date = chrono::NaiveDate::from_ymd_opt(2006, 10, 6).unwrap();
+    // Two sets point at each other (circular reference)
+    let mut parent = common::create_test_set("pc01");
+    parent.name = "Test Block".to_string();
+    parent.block = Some("Test Block".to_string());
+    parent.parent_code = Some("pc02".to_string());
+    parent.base_size = 301;
+    parent.release_date = chrono::NaiveDate::from_ymd_opt(2006, 10, 6).unwrap();
 
-    let mut tsb = common::create_test_set("pc02");
-    tsb.name = "Time Spiral Timeshifted".to_string();
-    tsb.block = Some("Time Spiral".to_string());
-    tsb.parent_code = Some("pc01".to_string());
-    tsb.base_size = 121;
-    tsb.release_date = chrono::NaiveDate::from_ymd_opt(2006, 10, 6).unwrap();
+    let mut child = common::create_test_set("pc02");
+    child.name = "Test Block Extras".to_string();
+    child.block = Some("Test Block".to_string());
+    child.parent_code = Some("pc01".to_string());
+    child.base_size = 121;
+    child.release_date = chrono::NaiveDate::from_ymd_opt(2006, 10, 6).unwrap();
 
-    repo.save_sets(&[tsp, tsb]).await.unwrap();
+    repo.save_sets(&[parent, child]).await.unwrap();
     repo.update_is_main().await.unwrap();
     repo.update_parent_codes().await.unwrap();
 
-    // After normalization, canonical parent (pc01 = "Time Spiral") should have NULL parent_code
+    // After normalization, canonical parent (pc01 = "Test Block") should have NULL parent_code
     let canonical_has_no_parent = db
         .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'pc01' AND parent_code IS NULL")
         .await
