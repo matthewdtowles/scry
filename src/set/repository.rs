@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{Ok, Result};
 use sqlx::QueryBuilder;
 use std::sync::Arc;
-use tracing::warn;
+use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct SetRepository {
@@ -297,8 +297,7 @@ impl SetRepository {
     pub async fn update_parent_codes(&self) -> Result<i64> {
         // Step 1: Break circular parent references.
         // When two sets point at each other, clear parent_code on the
-        // canonical parent (the one whose name matches the block name,
-        // or the earliest main set if no name match).
+        // canonical parent (the one whose name matches the block name).
         let qb_break_cycles = QueryBuilder::new(
             "UPDATE \"set\" s
             SET parent_code = NULL
@@ -316,92 +315,80 @@ impl SetRepository {
             );
         }
 
-        // Step 2: Set parent_code where a set's name matches the block name
-        let qb_name_match = QueryBuilder::new(
-            "UPDATE \"set\" s
-            SET parent_code = p.code
-            FROM \"set\" p
-            WHERE s.parent_code IS NULL
-              AND s.block IS NOT NULL
-              AND p.name = s.block
-              AND p.code != s.code
-              AND s.parent_code IS DISTINCT FROM p.code",
-        );
-        let name_matched = self.db.execute_query_builder(qb_name_match).await?;
-
-        // Step 3: For blocks where no set name matches the block name,
-        // use the earliest is_main set as the parent
-        let qb_earliest = QueryBuilder::new(
-            "UPDATE \"set\" s
-            SET parent_code = first.code
-            FROM (
-                SELECT DISTINCT ON (b.block) b.code, b.block
-                FROM \"set\" b
-                WHERE b.block IS NOT NULL
-                  AND b.is_main = true
-                  AND NOT EXISTS (
-                      SELECT 1 FROM \"set\" n WHERE n.name = b.block
-                  )
-                ORDER BY b.block, b.release_date ASC, b.code ASC
-            ) first
-            WHERE s.block = first.block
-              AND s.code != first.code
-              AND s.parent_code IS NULL
-              AND s.parent_code IS DISTINCT FROM first.code",
-        );
-        let earliest_matched = self.db.execute_query_builder(qb_earliest).await?;
-
-        // Step 4: Normalize parent_codes within each block so all sets
-        // point to the same canonical parent (earliest main set).
-        // Fixes cases where Scryfall sets parent_code to a non-first
-        // set in the block (e.g., AER promos -> AER instead of KLD).
-        let qb_normalize = QueryBuilder::new(
-            "UPDATE \"set\" s
-            SET parent_code = first.code
-            FROM (
-                SELECT DISTINCT ON (b.block) b.code, b.block
-                FROM \"set\" b
-                WHERE b.block IS NOT NULL
-                  AND b.is_main = true
-                ORDER BY b.block, b.release_date ASC, b.code ASC
-            ) first
-            WHERE s.block = first.block
-              AND s.code != first.code
-              AND s.parent_code IS DISTINCT FROM first.code",
-        );
-        let normalized = self.db.execute_query_builder(qb_normalize).await?;
-
-        // Step 5: Resolve grandchild chains. Sets whose parent_code
-        // points to a set that itself has a parent_code should point
-        // to the root ancestor instead. Uses a recursive CTE to walk
-        // the chain up to 10 levels deep.
-        let qb_flatten = QueryBuilder::new(
-            "WITH RECURSIVE ancestors AS (
-                SELECT code, parent_code, code AS root, 0 AS depth
+        // Step 2: For each block, find the canonical parent (earliest
+        // main set by release_date). Set parent_code for ALL other sets
+        // in that block to point to it. The canonical parent gets NULL.
+        let qb_assign_block = QueryBuilder::new(
+            "WITH canonical AS (
+                SELECT DISTINCT ON (block) code, block
                 FROM \"set\"
-                WHERE parent_code IS NULL
-                UNION ALL
-                SELECT s.code, s.parent_code, a.root, a.depth + 1
-                FROM \"set\" s
-                JOIN ancestors a ON s.parent_code = a.code
-                WHERE a.depth < 10
+                WHERE block IS NOT NULL
+                  AND is_main = true
+                ORDER BY block, release_date ASC, code ASC
             )
             UPDATE \"set\" s
-            SET parent_code = a.root
-            FROM ancestors a
-            WHERE s.code = a.code
-              AND a.root != s.code
-              AND s.parent_code IS DISTINCT FROM a.root",
+            SET parent_code = c.code
+            FROM canonical c
+            WHERE s.block = c.block
+              AND s.code != c.code
+              AND s.parent_code IS DISTINCT FROM c.code",
         );
-        let flattened = self.db.execute_query_builder(qb_flatten).await?;
-        if flattened > 0 {
-            warn!(
-                "Flattened {} grandchild parent_code chain(s)",
-                flattened
-            );
-        }
+        let block_assigned = self.db.execute_query_builder(qb_assign_block).await?;
 
-        Ok(cycles_broken + name_matched + earliest_matched + normalized + flattened)
+        // Clear parent_code on canonical parents themselves
+        let qb_clear_canonical = QueryBuilder::new(
+            "WITH canonical AS (
+                SELECT DISTINCT ON (block) code, block
+                FROM \"set\"
+                WHERE block IS NOT NULL
+                  AND is_main = true
+                ORDER BY block, release_date ASC, code ASC
+            )
+            UPDATE \"set\" s
+            SET parent_code = NULL
+            FROM canonical c
+            WHERE s.code = c.code
+              AND s.parent_code IS NOT NULL",
+        );
+        let canonical_cleared = self.db.execute_query_builder(qb_clear_canonical).await?;
+
+        // Step 3: Adopt orphans. Sets without a block but whose
+        // parent_code points to a set in a block should point to
+        // that block's canonical parent instead.
+        let qb_adopt = QueryBuilder::new(
+            "WITH canonical AS (
+                SELECT DISTINCT ON (block) code, block
+                FROM \"set\"
+                WHERE block IS NOT NULL
+                  AND is_main = true
+                ORDER BY block, release_date ASC, code ASC
+            )
+            UPDATE \"set\" s
+            SET parent_code = c.code
+            FROM \"set\" parent
+            JOIN canonical c ON parent.block = c.block
+            WHERE s.block IS NULL
+              AND s.parent_code = parent.code
+              AND s.parent_code IS DISTINCT FROM c.code",
+        );
+        let adopted = self.db.execute_query_builder(qb_adopt).await?;
+
+        // Step 4: One-off fixes for sets Scryfall misclassifies.
+        // TSB (Time Spiral Timeshifted) belongs to the Time Spiral block.
+        let qb_fixups = QueryBuilder::new(
+            "UPDATE \"set\"
+            SET block = 'Time Spiral',
+                parent_code = 'tsp'
+            WHERE code = 'tsb'
+              AND (block IS DISTINCT FROM 'Time Spiral'
+                OR parent_code IS DISTINCT FROM 'tsp')",
+        );
+        let fixups = self.db.execute_query_builder(qb_fixups).await?;
+
+        let total = cycles_broken + block_assigned + canonical_cleared + adopted + fixups;
+        info!("Updated parent_codes: {} block-assigned, {} canonical cleared, {} adopted, {} cycles broken, {} fixups",
+            block_assigned, canonical_cleared, adopted, cycles_broken, fixups);
+        Ok(total)
     }
 
     pub async fn update_is_main(&self) -> Result<i64> {
