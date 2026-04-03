@@ -52,6 +52,7 @@ pub fn create_test_set(code: &str) -> Set {
 pub fn create_test_card(id: &str, set_code: &str) -> Card {
     Card {
         artist: Some("Test Artist".to_string()),
+        flavor_name: None,
         has_foil: true,
         has_non_foil: true,
         id: id.to_string(),
