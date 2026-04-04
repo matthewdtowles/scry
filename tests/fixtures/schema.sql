@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS "set" (
 CREATE TABLE IF NOT EXISTS card (
     id VARCHAR(36) PRIMARY KEY,
     artist VARCHAR(255),
+    flavor_name VARCHAR(255),
     has_foil BOOLEAN NOT NULL DEFAULT false,
     has_non_foil BOOLEAN NOT NULL DEFAULT false,
     img_src VARCHAR(255) NOT NULL,
