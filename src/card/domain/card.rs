@@ -6,6 +6,7 @@ use sqlx::FromRow;
 #[derive(Clone, Debug, FromRow, Serialize, Deserialize)]
 pub struct Card {
     pub artist: Option<String>,
+    pub flavor_name: Option<String>,
     pub has_foil: bool,
     pub has_non_foil: bool,
     pub id: String,
@@ -212,6 +213,7 @@ mod tests {
     fn create_test_card() -> Card {
         Card {
             artist: Some("Artist Name".to_string()),
+            flavor_name: None,
             has_foil: true,
             has_non_foil: true,
             id: "test-id".to_string(),

@@ -126,7 +126,7 @@ impl CardRepository {
         debug!("Saving {} cards", cards.len());
         let mut query_builder = QueryBuilder::new(
             "INSERT INTO card (
-                id, artist, has_foil, has_non_foil, img_src,
+                id, artist, flavor_name, has_foil, has_non_foil, img_src,
                 in_main, is_alternative, is_reserved, mana_cost, name,
                 number, oracle_text, rarity, set_code, sort_number,
                 type, layout
@@ -135,6 +135,7 @@ impl CardRepository {
         query_builder.push_values(cards, |mut b, card| {
             b.push_bind(&card.id)
                 .push_bind(&card.artist)
+                .push_bind(&card.flavor_name)
                 .push_bind(&card.has_foil)
                 .push_bind(&card.has_non_foil)
                 .push_bind(&card.img_src)
@@ -154,6 +155,7 @@ impl CardRepository {
         query_builder.push(
             " ON CONFLICT (id) DO UPDATE SET
             artist = EXCLUDED.artist,
+            flavor_name = EXCLUDED.flavor_name,
             has_foil = EXCLUDED.has_foil,
             has_non_foil = EXCLUDED.has_non_foil,
             img_src = EXCLUDED.img_src,
@@ -171,6 +173,7 @@ impl CardRepository {
             layout = EXCLUDED.layout
         WHERE
             card.artist IS DISTINCT FROM EXCLUDED.artist OR
+            card.flavor_name IS DISTINCT FROM EXCLUDED.flavor_name OR
             card.has_foil IS DISTINCT FROM EXCLUDED.has_foil OR
             card.has_non_foil IS DISTINCT FROM EXCLUDED.has_non_foil OR
             card.img_src IS DISTINCT FROM EXCLUDED.img_src OR

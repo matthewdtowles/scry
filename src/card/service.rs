@@ -377,6 +377,7 @@ mod tests {
     fn create_test_card(id: &str) -> Card {
         Card {
             artist: Some("Artist".to_string()),
+            flavor_name: None,
             has_foil: true,
             has_non_foil: true,
             id: id.to_string(),
