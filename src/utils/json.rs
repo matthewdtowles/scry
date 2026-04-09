@@ -17,6 +17,13 @@ pub fn extract_optional_string(value: &Value, key: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+pub fn extract_optional_date(value: &Value, key: &str) -> Option<NaiveDate> {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+}
+
 pub fn extract_date(value: &Value, key: &str) -> Result<NaiveDate> {
     let date_str = value
         .get(key)

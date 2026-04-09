@@ -1,4 +1,9 @@
-use crate::{cli::Commands, portfolio::service::PortfolioService, price::PriceService};
+use crate::{
+    cli::Commands,
+    portfolio::service::PortfolioService,
+    price::PriceService,
+    sealed_product::service::SealedProductService,
+};
 use anyhow::Result;
 use dialoguer::Confirm;
 use std::sync::Arc;
@@ -10,6 +15,7 @@ pub struct CliController {
     price_service: Arc<PriceService>,
     health_service: crate::health_check::service::HealthCheckService,
     portfolio_service: PortfolioService,
+    sealed_product_service: SealedProductService,
 }
 
 impl CliController {
@@ -19,6 +25,7 @@ impl CliController {
         price_service: Arc<PriceService>,
         health_service: crate::health_check::service::HealthCheckService,
         portfolio_service: PortfolioService,
+        sealed_product_service: SealedProductService,
     ) -> Self {
         Self {
             card_service,
@@ -26,6 +33,7 @@ impl CliController {
             price_service,
             health_service,
             portfolio_service,
+            sealed_product_service,
         }
     }
 
@@ -36,10 +44,11 @@ impl CliController {
                 cards,
                 prices,
                 set_cards,
+                sealed,
                 reset,
             } => {
                 if let Err(e) = self
-                    .handle_ingest(sets, cards, prices, set_cards, reset)
+                    .handle_ingest(sets, cards, prices, set_cards, sealed, reset)
                     .await
                 {
                     error!("Ingestion failed: {}", e);
@@ -127,6 +136,7 @@ impl CliController {
         cards: bool,
         prices: bool,
         set_cards: Option<String>,
+        sealed: bool,
         reset: bool,
     ) -> Result<()> {
         if reset {
@@ -135,7 +145,7 @@ impl CliController {
                 Err(e) => error!("Failed to reset data: {}", e),
             }
         }
-        let do_all = !sets && !cards && !prices && set_cards.is_none();
+        let do_all = !sets && !cards && !prices && !sealed && set_cards.is_none();
         if do_all || sets {
             match self.update_sets().await {
                 Ok(()) => info!("Successfully updated sets."),
@@ -160,6 +170,12 @@ impl CliController {
             match self.update_prices().await {
                 Ok(()) => info!("Price update completed successfully."),
                 Err(e) => error!("Price update failure: {}", e),
+            }
+        }
+        if do_all || sealed {
+            match self.update_sealed_products().await {
+                Ok(()) => info!("Sealed product update completed successfully."),
+                Err(e) => error!("Sealed product update failure: {}", e),
             }
         }
         Ok(())
@@ -313,6 +329,22 @@ impl CliController {
             self.portfolio_service.compute_portfolio_summaries().await?;
         info!("Portfolio summaries saved: {}", summaries_saved);
         info!("Card performance rows saved: {}", performance_saved);
+        Ok(())
+    }
+
+    async fn update_sealed_products(&self) -> Result<()> {
+        let total_before = self.sealed_product_service.fetch_count().await?;
+        let set_codes = self.set_service.fetch_set_codes_with_prices().await?;
+        info!(
+            "Ingesting sealed products for {} sets",
+            set_codes.len()
+        );
+        self.sealed_product_service
+            .ingest_all(&set_codes)
+            .await?;
+        let total_after = self.sealed_product_service.fetch_count().await?;
+        info!("Sealed products before: {}", total_before);
+        info!("Sealed products after: {}", total_after);
         Ok(())
     }
 

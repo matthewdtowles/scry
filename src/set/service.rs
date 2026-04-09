@@ -23,6 +23,10 @@ impl SetService {
         self.repository.count().await
     }
 
+    pub async fn fetch_set_codes_with_prices(&self) -> Result<Vec<String>> {
+        self.repository.fetch_set_codes_with_prices().await
+    }
+
     pub async fn ingest_all(&self) -> Result<i64> {
         debug!("Starting MTG set ingestion");
         let raw_data: Value = self.client.fetch_all_sets().await?;
