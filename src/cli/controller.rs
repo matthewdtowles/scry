@@ -334,14 +334,7 @@ impl CliController {
 
     async fn update_sealed_products(&self) -> Result<()> {
         let total_before = self.sealed_product_service.fetch_count().await?;
-        let set_codes = self.set_service.fetch_set_codes_with_prices().await?;
-        info!(
-            "Ingesting sealed products for {} sets",
-            set_codes.len()
-        );
-        self.sealed_product_service
-            .ingest_all(&set_codes)
-            .await?;
+        self.sealed_product_service.ingest_all().await?;
         let total_after = self.sealed_product_service.fetch_count().await?;
         info!("Sealed products before: {}", total_before);
         info!("Sealed products after: {}", total_after);

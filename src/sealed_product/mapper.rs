@@ -5,7 +5,8 @@ use serde_json::Value;
 pub struct SealedProductMapper;
 
 impl SealedProductMapper {
-    pub fn map_mtg_json_to_sealed_products(
+    #[cfg(test)]
+    fn map_mtg_json_to_sealed_products(
         set_data: &Value,
         set_code: &str,
     ) -> Result<Vec<SealedProduct>> {
@@ -20,16 +21,23 @@ impl SealedProductMapper {
 
         let mut products = Vec::new();
         for item in sealed_arr {
-            match Self::map_single(item, set_code) {
-                Ok(product) => {
-                    if !product.is_online_only() {
-                        products.push(product);
-                    }
-                }
+            match Self::map_single_item(item, set_code) {
+                Ok(Some(product)) => products.push(product),
+                Ok(None) => continue,
                 Err(_) => continue,
             }
         }
         Ok(products)
+    }
+
+    /// Parse a single sealed product JSON object, returning None if filtered out (online-only).
+    pub fn map_single_item(item: &Value, set_code: &str) -> Result<Option<SealedProduct>> {
+        let product = Self::map_single(item, set_code)?;
+        if product.is_online_only() {
+            Ok(None)
+        } else {
+            Ok(Some(product))
+        }
     }
 
     fn map_single(item: &Value, set_code: &str) -> Result<SealedProduct> {

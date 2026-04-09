@@ -1,10 +1,11 @@
 use crate::database::ConnectionPool;
-use crate::sealed_product::mapper::SealedProductMapper;
+use crate::sealed_product::event_processor::SealedProductEventProcessor;
 use crate::sealed_product::repository::SealedProductRepository;
 use crate::utils::http_client::HttpClient;
+use crate::utils::json_stream_parser::JsonStreamParser;
 use anyhow::Result;
-use serde_json::Value;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
 pub struct SealedProductService {
@@ -13,6 +14,9 @@ pub struct SealedProductService {
 }
 
 impl SealedProductService {
+    const BATCH_SIZE: usize = 200;
+    const CONCURRENCY: usize = 4;
+
     pub fn new(db: Arc<ConnectionPool>, http_client: Arc<HttpClient>) -> Self {
         Self {
             client: http_client,
@@ -24,41 +28,56 @@ impl SealedProductService {
         self.repository.count().await
     }
 
-    /// Ingest sealed products for a single set by fetching its full set data.
-    pub async fn ingest_for_set(&self, set_code: &str) -> Result<i64> {
-        debug!("Ingesting sealed products for set: {}", set_code);
-        let raw_data: Value = self.client.fetch_set_cards(set_code).await?;
-        let products =
-            SealedProductMapper::map_mtg_json_to_sealed_products(&raw_data, set_code)?;
+    /// Ingest all sealed products by streaming AllPrintings.json.
+    /// Extracts sealedProduct arrays from each set in the stream.
+    pub async fn ingest_all(&self) -> Result<i64> {
+        info!("Starting sealed product ingestion from AllPrintings stream");
+        let byte_stream = self.client.all_cards_stream().await?;
+        let sem = Arc::new(Semaphore::new(Self::CONCURRENCY));
+        let event_processor = SealedProductEventProcessor::new(Self::BATCH_SIZE);
+        let mut json_stream_parser = JsonStreamParser::new(event_processor);
+        let repo = self.repository.clone();
+        let total = Arc::new(tokio::sync::Mutex::new(0i64));
+        let total_for_closure = total.clone();
 
-        if products.is_empty() {
-            debug!("No sealed products found for set: {}", set_code);
-            return Ok(0);
-        }
+        json_stream_parser
+            .parse_stream(byte_stream, move |batch| {
+                let repo = repo.clone();
+                let sem = sem.clone();
+                let total = total_for_closure.clone();
+                Box::pin(async move {
+                    if batch.is_empty() {
+                        return Ok(());
+                    }
+                    let _permit = sem.clone().acquire_owned().await;
+                    let set_code = batch[0].set_code.clone();
+                    debug!(
+                        "Saving {} sealed products for set {}",
+                        batch.len(),
+                        set_code
+                    );
+                    match repo.save(&batch).await {
+                        Ok(count) => {
+                            let mut lock = total.lock().await;
+                            *lock += count;
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to save sealed products for set {}: {}",
+                                set_code, e
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .await?;
 
-        let count = self.repository.save(&products).await?;
-        debug!(
-            "Saved {} sealed products for set {}",
-            count, set_code
+        let final_total = *total.lock().await;
+        info!(
+            "Sealed product ingestion complete: {} total saved",
+            final_total
         );
-        Ok(count)
-    }
-
-    /// Ingest sealed products for all sets.
-    /// Fetches the set list, then for each set fetches its detailed data
-    /// which includes the sealedProduct array.
-    pub async fn ingest_all(&self, set_codes: &[String]) -> Result<i64> {
-        info!("Starting sealed product ingestion for {} sets", set_codes.len());
-        let mut total = 0i64;
-
-        for code in set_codes {
-            match self.ingest_for_set(code).await {
-                Ok(count) => total += count,
-                Err(e) => warn!("Failed to ingest sealed products for set {}: {}", code, e),
-            }
-        }
-
-        info!("Sealed product ingestion complete: {} total saved", total);
-        Ok(total)
+        Ok(final_total)
     }
 }
