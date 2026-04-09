@@ -171,6 +171,10 @@ impl CliController {
                 Ok(()) => info!("Price update completed successfully."),
                 Err(e) => error!("Price update failure: {}", e),
             }
+            match self.update_sealed_product_prices().await {
+                Ok(()) => info!("Sealed product price update completed successfully."),
+                Err(e) => error!("Sealed product price update failure: {}", e),
+            }
         }
         if do_all || sealed {
             match self.update_sealed_products().await {
@@ -329,6 +333,13 @@ impl CliController {
             self.portfolio_service.compute_portfolio_summaries().await?;
         info!("Portfolio summaries saved: {}", summaries_saved);
         info!("Card performance rows saved: {}", performance_saved);
+        Ok(())
+    }
+
+    async fn update_sealed_product_prices(&self) -> Result<()> {
+        info!("Starting sealed product price ingestion");
+        let total = self.sealed_product_service.ingest_prices().await?;
+        info!("Sealed product prices saved: {}", total);
         Ok(())
     }
 

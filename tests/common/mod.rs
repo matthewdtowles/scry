@@ -74,6 +74,8 @@ pub fn create_test_card(id: &str, set_code: &str) -> Card {
         number: "1".to_string(),
         oracle_text: Some("Test oracle text".to_string()),
         other_face_ids: None,
+        purchase_url_tcgplayer: None,
+        purchase_url_tcgplayer_etched: None,
         rarity: CardRarity::Rare,
         set_code: set_code.to_string(),
         side: None,

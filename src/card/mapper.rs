@@ -62,6 +62,16 @@ impl CardMapper {
             .ok_or_else(|| anyhow::anyhow!("Missing scryfallId"))?;
         let img_src = Card::build_scryfall_image_path(scryfall_id)?;
 
+        let purchase_urls = card_data.get("purchaseUrls");
+        let purchase_url_tcgplayer = purchase_urls
+            .and_then(|u| u.get("tcgplayer"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let purchase_url_tcgplayer_etched = purchase_urls
+            .and_then(|u| u.get("tcgplayerEtched"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
         let in_main = MainSetClassifier::is_main_set_card(card_data);
         let layout = card_data
             .get("layout")
@@ -130,6 +140,8 @@ impl CardMapper {
             number: number_str,
             oracle_text,
             other_face_ids,
+            purchase_url_tcgplayer,
+            purchase_url_tcgplayer_etched,
             rarity,
             set_code,
             side,
