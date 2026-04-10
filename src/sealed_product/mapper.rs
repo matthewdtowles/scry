@@ -55,6 +55,12 @@ impl SealedProductMapper {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let tcgplayer_product_id = item
+            .get("identifiers")
+            .and_then(|ids| ids.get("tcgplayerProductId"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         let contents_summary = item
             .get("contents")
             .map(|c| Self::flatten_contents(c));
@@ -70,6 +76,7 @@ impl SealedProductMapper {
             release_date,
             contents_summary,
             purchase_url_tcgplayer,
+            tcgplayer_product_id,
         })
     }
 
