@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS card (
     name VARCHAR(255) NOT NULL,
     number VARCHAR(20) NOT NULL,
     oracle_text TEXT,
+    purchase_url_tcgplayer VARCHAR(512),
+    purchase_url_tcgplayer_etched VARCHAR(512),
     rarity card_rarity_enum NOT NULL DEFAULT 'common',
     set_code VARCHAR(10) NOT NULL REFERENCES "set"(code),
     sort_number VARCHAR(20) NOT NULL,
