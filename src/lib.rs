@@ -4,5 +4,6 @@ pub mod database;
 pub mod health_check;
 pub mod portfolio;
 pub mod price;
+pub mod sealed_product;
 pub mod set;
 pub mod utils;

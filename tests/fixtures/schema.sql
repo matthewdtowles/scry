@@ -4,10 +4,20 @@
 -- Use advisory lock to prevent concurrent schema creation races
 SELECT pg_advisory_lock(42);
 
--- Enum types (use DO blocks to handle pre-existing types)
+-- Enum types (use DO blocks to handle pre-existing types).
+--
+-- We catch BOTH duplicate_object (42710) and unique_violation (23505). The
+-- advisory lock above narrows the race window but does not eliminate it:
+-- each DO block commits autonomously, so when parallel test sessions race
+-- on CREATE TYPE, Postgres may raise either error code depending on whether
+-- the conflict is detected via the type lookup or via the underlying
+-- pg_type_typname_nsp_index uniqueness check. Catching only one of the two
+-- causes CI to fail intermittently — keep both branches.
 DO $$ BEGIN
     CREATE TYPE card_rarity_enum AS ENUM ('common', 'uncommon', 'rare', 'mythic', 'bonus', 'special');
-EXCEPTION WHEN duplicate_object THEN NULL;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN unique_violation THEN NULL;
 END $$;
 
 DO $$ BEGIN
@@ -15,12 +25,16 @@ DO $$ BEGIN
         'standard', 'commander', 'modern', 'legacy', 'vintage',
         'brawl', 'explorer', 'historic', 'oathbreaker', 'pauper', 'pioneer'
     );
-EXCEPTION WHEN duplicate_object THEN NULL;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN unique_violation THEN NULL;
 END $$;
 
 DO $$ BEGIN
     CREATE TYPE legality_status_enum AS ENUM ('legal', 'banned', 'restricted');
-EXCEPTION WHEN duplicate_object THEN NULL;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN unique_violation THEN NULL;
 END $$;
 
 -- Set table
@@ -52,6 +66,8 @@ CREATE TABLE IF NOT EXISTS card (
     name VARCHAR(255) NOT NULL,
     number VARCHAR(20) NOT NULL,
     oracle_text TEXT,
+    purchase_url_tcgplayer VARCHAR(512),
+    purchase_url_tcgplayer_etched VARCHAR(512),
     rarity card_rarity_enum NOT NULL DEFAULT 'common',
     set_code VARCHAR(10) NOT NULL REFERENCES "set"(code),
     sort_number VARCHAR(20) NOT NULL,
@@ -130,6 +146,21 @@ CREATE TABLE IF NOT EXISTS portfolio_value_history (
     id SERIAL PRIMARY KEY,
     total_value NUMERIC(12,2) NOT NULL,
     date DATE NOT NULL UNIQUE
+);
+
+-- Sealed product table
+CREATE TABLE IF NOT EXISTS sealed_product (
+    uuid VARCHAR(36) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    set_code VARCHAR(10) NOT NULL REFERENCES "set"(code),
+    category VARCHAR(64),
+    subtype VARCHAR(64),
+    card_count INTEGER,
+    product_size INTEGER,
+    release_date DATE,
+    contents_summary TEXT,
+    purchase_url_tcgplayer VARCHAR(512),
+    tcgplayer_product_id VARCHAR(32)
 );
 
 SELECT pg_advisory_unlock(42);

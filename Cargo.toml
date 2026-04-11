@@ -1,6 +1,6 @@
 [package]
 name = "scry"
-version = "5.6.0"
+version = "5.7.0"
 edition = "2021"
 description = "MTG data ETL management tool"
 

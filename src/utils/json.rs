@@ -17,6 +17,13 @@ pub fn extract_optional_string(value: &Value, key: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+pub fn extract_optional_date(value: &Value, key: &str) -> Option<NaiveDate> {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+}
+
 pub fn extract_date(value: &Value, key: &str) -> Result<NaiveDate> {
     let date_str = value
         .get(key)
@@ -75,5 +82,26 @@ mod tests {
     fn test_extract_date_missing() {
         let val = json!({"other": "value"});
         assert!(extract_date(&val, "releaseDate").is_err());
+    }
+
+    #[test]
+    fn test_extract_optional_date_valid() {
+        let val = json!({"releaseDate": "2024-08-02"});
+        assert_eq!(
+            extract_optional_date(&val, "releaseDate"),
+            Some(NaiveDate::from_ymd_opt(2024, 8, 2).unwrap())
+        );
+    }
+
+    #[test]
+    fn test_extract_optional_date_invalid_format() {
+        let val = json!({"releaseDate": "not-a-date"});
+        assert_eq!(extract_optional_date(&val, "releaseDate"), None);
+    }
+
+    #[test]
+    fn test_extract_optional_date_missing_key() {
+        let val = json!({"other": "value"});
+        assert_eq!(extract_optional_date(&val, "releaseDate"), None);
     }
 }

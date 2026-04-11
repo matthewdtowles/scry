@@ -29,6 +29,8 @@ pub enum Commands {
             help = "Ingest all cards for given set. E.g.: `ingest -k abc` for cards in set `abc`."
         )]
         set_cards: Option<String>,
+        #[arg(long, help = "Ingest sealed products for all sets.")]
+        sealed: bool,
         #[arg(short, long, help = "Reset all data prior to ingestion.")]
         reset: bool,
     },
