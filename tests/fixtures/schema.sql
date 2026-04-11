@@ -7,7 +7,9 @@ SELECT pg_advisory_lock(42);
 -- Enum types (use DO blocks to handle pre-existing types)
 DO $$ BEGIN
     CREATE TYPE card_rarity_enum AS ENUM ('common', 'uncommon', 'rare', 'mythic', 'bonus', 'special');
-EXCEPTION WHEN duplicate_object THEN NULL;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN unique_violation THEN NULL;
 END $$;
 
 DO $$ BEGIN
@@ -15,12 +17,16 @@ DO $$ BEGIN
         'standard', 'commander', 'modern', 'legacy', 'vintage',
         'brawl', 'explorer', 'historic', 'oathbreaker', 'pauper', 'pioneer'
     );
-EXCEPTION WHEN duplicate_object THEN NULL;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN unique_violation THEN NULL;
 END $$;
 
 DO $$ BEGIN
     CREATE TYPE legality_status_enum AS ENUM ('legal', 'banned', 'restricted');
-EXCEPTION WHEN duplicate_object THEN NULL;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN unique_violation THEN NULL;
 END $$;
 
 -- Set table
