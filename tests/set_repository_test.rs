@@ -51,6 +51,24 @@ async fn test_fetch_empty_sets() {
 
 #[tokio::test]
 #[ignore]
+async fn test_fetch_all_set_codes() {
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db);
+
+    // Use codes unique to this test so parallel tests don't collide.
+    let sets = vec![
+        common::create_test_set("fasc01"),
+        common::create_test_set("fasc02"),
+    ];
+    repo.save_sets(&sets).await.unwrap();
+
+    let codes = repo.fetch_all_set_codes().await.unwrap();
+    assert!(codes.iter().any(|c| c == "fasc01"));
+    assert!(codes.iter().any(|c| c == "fasc02"));
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_delete_set_batch() {
     let db = common::setup_test_db().await;
     let set_repo = SetRepository::new(db.clone());

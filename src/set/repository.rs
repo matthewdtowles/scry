@@ -103,6 +103,17 @@ impl SetRepository {
         Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
+    /// Fetch every set code currently present in the `set` table.
+    ///
+    /// Used by downstream ingestion steps (e.g. sealed products) to skip any
+    /// entity whose parent set was excluded by the set-ingestion filter, so
+    /// FK violations become impossible without duplicating the filter logic.
+    pub async fn fetch_all_set_codes(&self) -> Result<Vec<String>> {
+        let qb = QueryBuilder::new("SELECT code FROM \"set\"");
+        let rows: Vec<(String,)> = self.db.fetch_all_query_builder(qb).await?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
     pub async fn calculate_set_prices(&self, codes: &[String]) -> Result<Vec<SetPrice>> {
         if codes.is_empty() {
             return Ok(Vec::new());
