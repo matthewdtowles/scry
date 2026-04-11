@@ -9,7 +9,6 @@ DO $$ BEGIN
     CREATE TYPE card_rarity_enum AS ENUM ('common', 'uncommon', 'rare', 'mythic', 'bonus', 'special');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
-    WHEN unique_violation THEN NULL;
 END $$;
 
 DO $$ BEGIN
@@ -19,14 +18,12 @@ DO $$ BEGIN
     );
 EXCEPTION
     WHEN duplicate_object THEN NULL;
-    WHEN unique_violation THEN NULL;
 END $$;
 
 DO $$ BEGIN
     CREATE TYPE legality_status_enum AS ENUM ('legal', 'banned', 'restricted');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
-    WHEN unique_violation THEN NULL;
 END $$;
 
 -- Set table

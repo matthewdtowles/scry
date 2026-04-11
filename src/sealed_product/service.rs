@@ -5,7 +5,6 @@ use crate::utils::http_client::HttpClient;
 use crate::utils::json_stream_parser::JsonStreamParser;
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
 pub struct SealedProductService {
@@ -15,7 +14,6 @@ pub struct SealedProductService {
 
 impl SealedProductService {
     const BATCH_SIZE: usize = 200;
-    const CONCURRENCY: usize = 4;
 
     pub fn new(db: Arc<ConnectionPool>, http_client: Arc<HttpClient>) -> Self {
         Self {
@@ -33,7 +31,6 @@ impl SealedProductService {
     pub async fn ingest_all(&self) -> Result<i64> {
         info!("Starting sealed product ingestion from AllPrintings stream");
         let byte_stream = self.client.all_cards_stream().await?;
-        let sem = Arc::new(Semaphore::new(Self::CONCURRENCY));
         let event_processor = SealedProductEventProcessor::new(Self::BATCH_SIZE);
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         let repo = self.repository.clone();
@@ -43,17 +40,11 @@ impl SealedProductService {
         json_stream_parser
             .parse_stream(byte_stream, move |batch| {
                 let repo = repo.clone();
-                let sem = sem.clone();
                 let total = total_for_closure.clone();
                 Box::pin(async move {
                     if batch.is_empty() {
                         return Ok(());
                     }
-                    let _permit = sem
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .context("semaphore closed while acquiring sealed product permit")?;
                     let set_code = batch[0].set_code.clone();
                     debug!(
                         "Saving {} sealed products for set {}",
