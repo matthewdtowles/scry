@@ -4,11 +4,20 @@
 -- Use advisory lock to prevent concurrent schema creation races
 SELECT pg_advisory_lock(42);
 
--- Enum types (use DO blocks to handle pre-existing types)
+-- Enum types (use DO blocks to handle pre-existing types).
+--
+-- We catch BOTH duplicate_object (42710) and unique_violation (23505). The
+-- advisory lock above narrows the race window but does not eliminate it:
+-- each DO block commits autonomously, so when parallel test sessions race
+-- on CREATE TYPE, Postgres may raise either error code depending on whether
+-- the conflict is detected via the type lookup or via the underlying
+-- pg_type_typname_nsp_index uniqueness check. Catching only one of the two
+-- causes CI to fail intermittently — keep both branches.
 DO $$ BEGIN
     CREATE TYPE card_rarity_enum AS ENUM ('common', 'uncommon', 'rare', 'mythic', 'bonus', 'special');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
+    WHEN unique_violation THEN NULL;
 END $$;
 
 DO $$ BEGIN
@@ -18,12 +27,14 @@ DO $$ BEGIN
     );
 EXCEPTION
     WHEN duplicate_object THEN NULL;
+    WHEN unique_violation THEN NULL;
 END $$;
 
 DO $$ BEGIN
     CREATE TYPE legality_status_enum AS ENUM ('legal', 'banned', 'restricted');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
+    WHEN unique_violation THEN NULL;
 END $$;
 
 -- Set table
