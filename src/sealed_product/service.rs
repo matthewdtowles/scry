@@ -3,10 +3,10 @@ use crate::sealed_product::event_processor::SealedProductEventProcessor;
 use crate::sealed_product::repository::SealedProductRepository;
 use crate::utils::http_client::HttpClient;
 use crate::utils::json_stream_parser::JsonStreamParser;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 pub struct SealedProductService {
     client: Arc<HttpClient>,
@@ -49,25 +49,22 @@ impl SealedProductService {
                     if batch.is_empty() {
                         return Ok(());
                     }
-                    let _permit = sem.clone().acquire_owned().await;
+                    let _permit = sem
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .context("semaphore closed while acquiring sealed product permit")?;
                     let set_code = batch[0].set_code.clone();
                     debug!(
                         "Saving {} sealed products for set {}",
                         batch.len(),
                         set_code
                     );
-                    match repo.save(&batch).await {
-                        Ok(count) => {
-                            let mut lock = total.lock().await;
-                            *lock += count;
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to save sealed products for set {}: {}",
-                                set_code, e
-                            );
-                        }
-                    }
+                    let count = repo.save(&batch).await.with_context(|| {
+                        format!("Failed to save sealed products for set {}", set_code)
+                    })?;
+                    let mut lock = total.lock().await;
+                    *lock += count;
                     Ok(())
                 })
             })

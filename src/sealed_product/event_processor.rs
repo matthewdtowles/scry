@@ -71,17 +71,11 @@ impl JsonEventProcessor<SealedProduct> for SealedProductEventProcessor {
                 self.handle_string_value(&value)
             }
             JsonEvent::ValueInt => {
-                let value = parser
-                    .current_int()
-                    .map(|v: i64| v.to_string())
-                    .unwrap_or_else(|_| "0".to_string());
+                let value = parser.current_int::<i64>()?.to_string();
                 self.handle_number_value(&value)
             }
             JsonEvent::ValueFloat => {
-                let value = parser
-                    .current_float()
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|_| "0.0".to_string());
+                let value = parser.current_float()?.to_string();
                 self.handle_number_value(&value)
             }
             JsonEvent::ValueTrue => self.handle_boolean_value(true),

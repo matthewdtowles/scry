@@ -140,4 +140,19 @@ CREATE TABLE IF NOT EXISTS portfolio_value_history (
     date DATE NOT NULL UNIQUE
 );
 
+-- Sealed product table
+CREATE TABLE IF NOT EXISTS sealed_product (
+    uuid VARCHAR(36) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    set_code VARCHAR(10) NOT NULL REFERENCES "set"(code),
+    category VARCHAR(64),
+    subtype VARCHAR(64),
+    card_count INTEGER,
+    product_size INTEGER,
+    release_date DATE,
+    contents_summary TEXT,
+    purchase_url_tcgplayer VARCHAR(512),
+    tcgplayer_product_id VARCHAR(32)
+);
+
 SELECT pg_advisory_unlock(42);

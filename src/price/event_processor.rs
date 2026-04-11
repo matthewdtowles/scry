@@ -34,11 +34,11 @@ impl JsonEventProcessor<Price> for PriceEventProcessor {
                 self.handle_value(String::from(value))
             }
             JsonEvent::ValueInt => {
-                let value = parser.current_int().unwrap_or(0).to_string();
+                let value = parser.current_int::<i64>()?.to_string();
                 self.handle_value(value)
             }
             JsonEvent::ValueFloat => {
-                let value = parser.current_float().unwrap_or(0.0).to_string();
+                let value = parser.current_float()?.to_string();
                 self.handle_value(value)
             }
             JsonEvent::ValueTrue => self.handle_value("true".to_string()),

@@ -83,4 +83,25 @@ mod tests {
         let val = json!({"other": "value"});
         assert!(extract_date(&val, "releaseDate").is_err());
     }
+
+    #[test]
+    fn test_extract_optional_date_valid() {
+        let val = json!({"releaseDate": "2024-08-02"});
+        assert_eq!(
+            extract_optional_date(&val, "releaseDate"),
+            Some(NaiveDate::from_ymd_opt(2024, 8, 2).unwrap())
+        );
+    }
+
+    #[test]
+    fn test_extract_optional_date_invalid_format() {
+        let val = json!({"releaseDate": "not-a-date"});
+        assert_eq!(extract_optional_date(&val, "releaseDate"), None);
+    }
+
+    #[test]
+    fn test_extract_optional_date_missing_key() {
+        let val = json!({"other": "value"});
+        assert_eq!(extract_optional_date(&val, "releaseDate"), None);
+    }
 }

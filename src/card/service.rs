@@ -9,7 +9,7 @@ use crate::{
     price::service::PriceService,
     utils::{HttpClient, JsonStreamParser},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -96,7 +96,11 @@ impl CardService {
                     if batch.is_empty() {
                         return Ok(());
                     }
-                    let permit = sem.clone().acquire_owned().await;
+                    let permit = sem
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .context("semaphore closed while acquiring card ingest permit")?;
                     let mut batch_owned = batch.to_vec();
                     let handle = tokio::spawn(async move {
                         let _permit_guard = permit;
@@ -169,7 +173,11 @@ impl CardService {
                     if batch.is_empty() {
                         return Ok(());
                     }
-                    let _permit = sem.clone().acquire_owned().await;
+                    let _permit = sem
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .context("semaphore closed while acquiring card cleanup permit")?;
                     let mut ids_to_delete: Vec<String> = Vec::new();
                     for c in batch.iter() {
                         if c.should_filter() {
