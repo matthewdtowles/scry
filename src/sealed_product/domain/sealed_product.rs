@@ -13,7 +13,6 @@ pub struct SealedProduct {
     pub product_size: Option<i32>,
     pub release_date: Option<NaiveDate>,
     pub contents_summary: Option<String>,
-    pub purchase_url_tcgplayer: Option<String>,
     pub tcgplayer_product_id: Option<String>,
 }
 
@@ -40,7 +39,6 @@ mod tests {
             product_size: Some(36),
             release_date: NaiveDate::from_ymd_opt(2024, 8, 2),
             contents_summary: Some("36x Draft Booster Pack".to_string()),
-            purchase_url_tcgplayer: Some("https://tcgplayer.com/p/123".to_string()),
             tcgplayer_product_id: Some("541185".to_string()),
         }
     }

@@ -18,7 +18,6 @@ fn create_test_product(uuid: &str, set_code: &str) -> SealedProduct {
         product_size: Some(36),
         release_date: NaiveDate::from_ymd_opt(2024, 8, 2),
         contents_summary: Some("36x Draft Booster Pack".to_string()),
-        purchase_url_tcgplayer: Some("https://tcgplayer.com/p/123".to_string()),
         tcgplayer_product_id: Some("541185".to_string()),
     }
 }

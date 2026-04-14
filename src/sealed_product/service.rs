@@ -145,7 +145,6 @@ mod tests {
             product_size: None,
             release_date: None,
             contents_summary: None,
-            purchase_url_tcgplayer: None,
             tcgplayer_product_id: None,
         }
     }
