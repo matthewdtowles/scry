@@ -49,12 +49,6 @@ impl SealedProductMapper {
         let product_size = item.get("productSize").and_then(|v| v.as_i64()).map(|v| v as i32);
         let release_date = json::extract_optional_date(item, "releaseDate");
 
-        let purchase_url_tcgplayer = item
-            .get("purchaseUrls")
-            .and_then(|urls| urls.get("tcgplayer"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
         let tcgplayer_product_id = item
             .get("identifiers")
             .and_then(|ids| ids.get("tcgplayerProductId"))
@@ -75,7 +69,6 @@ impl SealedProductMapper {
             product_size,
             release_date,
             contents_summary,
-            purchase_url_tcgplayer,
             tcgplayer_product_id,
         })
     }
@@ -181,8 +174,7 @@ mod tests {
                     "cardCount": 540,
                     "productSize": 36,
                     "releaseDate": "2024-08-02",
-                    "purchaseUrls": { "tcgplayer": "https://tcg.com/123" },
-                    "identifiers": {},
+                    "identifiers": { "tcgplayerProductId": "541185" },
                     "contents": {
                         "sealed": [{ "count": 36, "name": "Draft Booster Pack", "set": "BLB", "uuid": "def-456" }]
                     }
@@ -200,7 +192,7 @@ mod tests {
         assert_eq!(p.subtype.as_deref(), Some("draft"));
         assert_eq!(p.card_count, Some(540));
         assert_eq!(p.product_size, Some(36));
-        assert_eq!(p.purchase_url_tcgplayer.as_deref(), Some("https://tcg.com/123"));
+        assert_eq!(p.tcgplayer_product_id.as_deref(), Some("541185"));
         assert_eq!(p.contents_summary.as_deref(), Some("36x Draft Booster Pack"));
     }
 

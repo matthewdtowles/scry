@@ -62,13 +62,13 @@ impl CardMapper {
             .ok_or_else(|| anyhow::anyhow!("Missing scryfallId"))?;
         let img_src = Card::build_scryfall_image_path(scryfall_id)?;
 
-        let purchase_urls = card_data.get("purchaseUrls");
-        let purchase_url_tcgplayer = purchase_urls
-            .and_then(|u| u.get("tcgplayer"))
+        let identifiers = card_data.get("identifiers");
+        let tcgplayer_product_id = identifiers
+            .and_then(|i| i.get("tcgplayerProductId"))
             .and_then(|v| v.as_str())
             .map(String::from);
-        let purchase_url_tcgplayer_etched = purchase_urls
-            .and_then(|u| u.get("tcgplayerEtched"))
+        let tcgplayer_etched_product_id = identifiers
+            .and_then(|i| i.get("tcgplayerEtchedProductId"))
             .and_then(|v| v.as_str())
             .map(String::from);
 
@@ -140,8 +140,8 @@ impl CardMapper {
             number: number_str,
             oracle_text,
             other_face_ids,
-            purchase_url_tcgplayer,
-            purchase_url_tcgplayer_etched,
+            tcgplayer_product_id,
+            tcgplayer_etched_product_id,
             rarity,
             set_code,
             side,
@@ -237,6 +237,25 @@ mod tests {
         assert_eq!(card.mana_cost, Some("{r}".to_string()));
         assert!(card.has_non_foil);
         assert!(!card.has_foil);
+    }
+
+    #[test]
+    fn test_map_json_extracts_tcgplayer_product_ids_from_identifiers() {
+        let mut json = create_valid_card_json();
+        json["identifiers"]["tcgplayerProductId"] = json!("541185");
+        json["identifiers"]["tcgplayerEtchedProductId"] = json!("541186");
+
+        let card = CardMapper::map_json_to_card(&json).unwrap();
+
+        assert_eq!(card.tcgplayer_product_id.as_deref(), Some("541185"));
+        assert_eq!(card.tcgplayer_etched_product_id.as_deref(), Some("541186"));
+    }
+
+    #[test]
+    fn test_map_json_leaves_tcgplayer_ids_none_when_absent() {
+        let card = CardMapper::map_json_to_card(&create_valid_card_json()).unwrap();
+        assert!(card.tcgplayer_product_id.is_none());
+        assert!(card.tcgplayer_etched_product_id.is_none());
     }
 
     #[test]

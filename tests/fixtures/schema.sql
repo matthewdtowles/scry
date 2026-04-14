@@ -66,8 +66,8 @@ CREATE TABLE IF NOT EXISTS card (
     name VARCHAR(255) NOT NULL,
     number VARCHAR(20) NOT NULL,
     oracle_text TEXT,
-    purchase_url_tcgplayer VARCHAR(512),
-    purchase_url_tcgplayer_etched VARCHAR(512),
+    tcgplayer_product_id VARCHAR(32),
+    tcgplayer_etched_product_id VARCHAR(32),
     rarity card_rarity_enum NOT NULL DEFAULT 'common',
     set_code VARCHAR(10) NOT NULL REFERENCES "set"(code),
     sort_number VARCHAR(20) NOT NULL,
@@ -159,7 +159,6 @@ CREATE TABLE IF NOT EXISTS sealed_product (
     product_size INTEGER,
     release_date DATE,
     contents_summary TEXT,
-    purchase_url_tcgplayer VARCHAR(512),
     tcgplayer_product_id VARCHAR(32)
 );
 

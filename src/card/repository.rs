@@ -128,8 +128,8 @@ impl CardRepository {
             "INSERT INTO card (
                 id, artist, flavor_name, has_foil, has_non_foil, img_src,
                 in_main, is_alternative, is_reserved, mana_cost, name,
-                number, oracle_text, purchase_url_tcgplayer,
-                purchase_url_tcgplayer_etched, rarity, set_code,
+                number, oracle_text, tcgplayer_product_id,
+                tcgplayer_etched_product_id, rarity, set_code,
                 sort_number, type, layout
             )",
         );
@@ -147,8 +147,8 @@ impl CardRepository {
                 .push_bind(&card.name)
                 .push_bind(&card.number)
                 .push_bind(&card.oracle_text)
-                .push_bind(&card.purchase_url_tcgplayer)
-                .push_bind(&card.purchase_url_tcgplayer_etched)
+                .push_bind(&card.tcgplayer_product_id)
+                .push_bind(&card.tcgplayer_etched_product_id)
                 .push_bind(&card.rarity)
                 .push_bind(&card.set_code)
                 .push_bind(&card.sort_number)
@@ -169,8 +169,8 @@ impl CardRepository {
             name = EXCLUDED.name,
             number = EXCLUDED.number,
             oracle_text = EXCLUDED.oracle_text,
-            purchase_url_tcgplayer = EXCLUDED.purchase_url_tcgplayer,
-            purchase_url_tcgplayer_etched = EXCLUDED.purchase_url_tcgplayer_etched,
+            tcgplayer_product_id = EXCLUDED.tcgplayer_product_id,
+            tcgplayer_etched_product_id = EXCLUDED.tcgplayer_etched_product_id,
             rarity = EXCLUDED.rarity,
             set_code = EXCLUDED.set_code,
             sort_number = EXCLUDED.sort_number,
@@ -189,8 +189,8 @@ impl CardRepository {
             card.name IS DISTINCT FROM EXCLUDED.name OR
             card.number IS DISTINCT FROM EXCLUDED.number OR
             card.oracle_text IS DISTINCT FROM EXCLUDED.oracle_text OR
-            card.purchase_url_tcgplayer IS DISTINCT FROM EXCLUDED.purchase_url_tcgplayer OR
-            card.purchase_url_tcgplayer_etched IS DISTINCT FROM EXCLUDED.purchase_url_tcgplayer_etched OR
+            card.tcgplayer_product_id IS DISTINCT FROM EXCLUDED.tcgplayer_product_id OR
+            card.tcgplayer_etched_product_id IS DISTINCT FROM EXCLUDED.tcgplayer_etched_product_id OR
             card.rarity IS DISTINCT FROM EXCLUDED.rarity OR
             card.set_code IS DISTINCT FROM EXCLUDED.set_code OR
             card.sort_number IS DISTINCT FROM EXCLUDED.sort_number OR
