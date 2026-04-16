@@ -5,7 +5,7 @@ use crate::{
     sealed_product::service::SealedProductService,
 };
 use anyhow::Result;
-use dialoguer::Confirm;
+use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -127,7 +127,89 @@ impl CliController {
                 }
                 Ok(())
             }
+
+            Commands::Interactive {} => self.interactive_mode().await,
         }
+    }
+
+    pub async fn interactive_mode(&self) -> Result<()> {
+        let menu_items = vec![
+            "Ingest All (sets, cards, prices, sealed)",
+            "Ingest Sets only",
+            "Ingest Cards only",
+            "Ingest Prices only",
+            "Ingest Sealed Products only",
+            "Ingest Cards for a specific set",
+            "Post-Ingest Prune",
+            "Post-Ingest Updates",
+            "Cleanup (sets)",
+            "Cleanup (sets + cards)",
+            "Health Check (basic)",
+            "Health Check (detailed)",
+            "Retention",
+            "Truncate History",
+            "Backfill",
+            "Backfill Set Price History",
+            "Portfolio Summary",
+            "Exit",
+        ];
+
+        loop {
+            println!();
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Select a command")
+                .items(&menu_items)
+                .default(0)
+                .interact();
+
+            let selection = match selection {
+                Ok(s) => s,
+                Err(_) => {
+                    info!("Exiting interactive mode.");
+                    break;
+                }
+            };
+
+            let result = match selection {
+                0 => self.handle_ingest(false, false, false, None, false, false).await,
+                1 => self.handle_ingest(true, false, false, None, false, false).await,
+                2 => self.handle_ingest(false, true, false, None, false, false).await,
+                3 => self.handle_ingest(false, false, true, None, false, false).await,
+                4 => self.handle_ingest(false, false, false, None, true, false).await,
+                5 => {
+                    let set_code: String = dialoguer::Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Enter set code")
+                        .interact_text()
+                        .unwrap_or_default();
+                    if set_code.is_empty() {
+                        warn!("No set code entered, skipping.");
+                        continue;
+                    }
+                    self.handle_ingest(false, false, false, Some(set_code), false, false).await
+                }
+                6 => self.post_ingest_prune().await,
+                7 => self.post_ingest_updates().await,
+                8 => self.handle_cleanup(false, 500).await,
+                9 => self.handle_cleanup(true, 500).await,
+                10 => self.handle_health(false).await,
+                11 => self.handle_health(true).await,
+                12 => self.handle_retention().await,
+                13 => self.handle_truncate_history().await,
+                14 => self.handle_backfill(false, false).await,
+                15 => self.handle_backfill_set_price_history().await,
+                16 => self.handle_portfolio_summary().await,
+                17 => {
+                    info!("Exiting interactive mode.");
+                    break;
+                }
+                _ => continue,
+            };
+
+            if let Err(e) = result {
+                error!("Command failed: {}", e);
+            }
+        }
+        Ok(())
     }
 
     async fn handle_ingest(

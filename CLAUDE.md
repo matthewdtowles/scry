@@ -23,6 +23,7 @@ cargo run -- post-ingest-updates  # Recalculate set sizes, prices, fix main set 
 cargo run -- cleanup -c           # Stream-cleanup individual cards based on filtering rules
 cargo run -- health               # Basic health check
 cargo run -- health --detailed    # Detailed health check
+cargo run -- interactive          # Launch interactive menu (run multiple commands in one session)
 cargo run -- retention            # Apply tiered retention to price_history, set_price_history, portfolio_value_history
 cargo run -- truncate-history     # Truncate price_history (interactive confirm)
 ```

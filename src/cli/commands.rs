@@ -86,4 +86,7 @@ pub enum Commands {
 
     /// Compute portfolio summaries for all users (portfolio_summary + portfolio_card_performance)
     PortfolioSummary {},
+
+    /// Launch interactive mode with a menu of all available commands
+    Interactive {},
 }

@@ -11,9 +11,18 @@ cp .env.example .env  # Configure DATABASE_URL
 # Run
 cargo run -- ingest           # Full ingest (sets, cards, prices)
 cargo run -- health           # Data integrity check
+cargo run -- interactive      # Launch interactive menu
 ```
 
 ## Commands
+
+### `interactive` — Interactive menu mode
+
+Launches an interactive session with a menu of all available commands. Useful for running multiple operations in a single session without restarting the tool each time.
+
+```bash
+scry interactive
+```
 
 ### `ingest` — Ingest MTG data from Scryfall
 
