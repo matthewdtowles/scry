@@ -5,7 +5,7 @@ use crate::{
     sealed_product::service::SealedProductService,
 };
 use anyhow::Result;
-use dialoguer::Confirm;
+use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -47,86 +47,293 @@ impl CliController {
                 sealed,
                 reset,
             } => {
-                if let Err(e) = self
-                    .handle_ingest(sets, cards, prices, set_cards, sealed, reset)
+                self.run_full_ingest_pipeline(sets, cards, prices, set_cards, sealed, reset)
                     .await
-                {
-                    error!("Ingestion failed: {}", e);
-                }
-                if let Err(e) = self.post_ingest_prune().await {
-                    error!("Post ingestion pruning failed: {}", e);
-                }
-                if let Err(e) = self.post_ingest_updates().await {
-                    error!("Post ingestion updates failed: {}", e);
-                }
-                Ok(())
             }
 
-            Commands::PostIngestPrune {} => {
-                if let Err(e) = self.post_ingest_prune().await {
-                    error!("Pruning failed: {}", e);
-                }
-                Ok(())
-            }
+            Commands::PostIngestPrune {} => self
+                .post_ingest_prune()
+                .await
+                .inspect_err(|e| error!("Pruning failed: {}", e)),
 
-            Commands::PostIngestUpdates {} => {
-                if let Err(e) = self.post_ingest_updates().await {
-                    error!("Set updates failed: {}", e);
-                }
-                Ok(())
-            }
+            Commands::PostIngestUpdates {} => self
+                .post_ingest_updates()
+                .await
+                .inspect_err(|e| error!("Set updates failed: {}", e)),
 
-            Commands::Cleanup { cards, batch_size } => {
-                if let Err(e) = self.handle_cleanup(cards, batch_size).await {
-                    error!("Cleanup failed: {}", e);
-                }
-                Ok(())
-            }
+            Commands::Cleanup { cards, batch_size } => self
+                .handle_cleanup(cards, batch_size)
+                .await
+                .inspect_err(|e| error!("Cleanup failed: {}", e)),
 
-            Commands::Health { detailed } => {
-                if let Err(e) = self.handle_health(detailed).await {
-                    error!("Health check failed: {}", e);
-                }
-                Ok(())
-            }
+            Commands::Health { detailed } => self
+                .handle_health(detailed)
+                .await
+                .inspect_err(|e| error!("Health check failed: {}", e)),
 
-            Commands::Retention {} => {
-                if let Err(e) = self.handle_retention().await {
-                    error!("Retention cleanup failed: {}", e);
-                }
-                Ok(())
-            }
+            Commands::Retention {} => self
+                .handle_retention()
+                .await
+                .inspect_err(|e| error!("Retention cleanup failed: {}", e)),
 
-            Commands::TruncateHistory {} => {
-                if let Err(e) = self.handle_truncate_history().await {
-                    error!("Truncate history failed: {}", e);
-                }
-                Ok(())
-            }
+            Commands::TruncateHistory {} => self
+                .handle_truncate_history()
+                .await
+                .inspect_err(|e| error!("Truncate history failed: {}", e)),
 
             Commands::Backfill {
                 truncate,
                 skip_retention,
-            } => {
-                if let Err(e) = self.handle_backfill(truncate, skip_retention).await {
-                    error!("Backfill failed: {}", e);
-                }
-                Ok(())
-            }
+            } => self
+                .handle_backfill(truncate, skip_retention)
+                .await
+                .inspect_err(|e| error!("Backfill failed: {}", e)),
 
-            Commands::BackfillSetPriceHistory {} => {
-                if let Err(e) = self.handle_backfill_set_price_history().await {
-                    error!("Set price history backfill failed: {}", e);
-                }
-                Ok(())
-            }
+            Commands::BackfillSetPriceHistory {} => self
+                .handle_backfill_set_price_history()
+                .await
+                .inspect_err(|e| error!("Set price history backfill failed: {}", e)),
 
-            Commands::PortfolioSummary {} => {
-                if let Err(e) = self.handle_portfolio_summary().await {
-                    error!("Portfolio summary computation failed: {}", e);
+            Commands::PortfolioSummary {} => self
+                .handle_portfolio_summary()
+                .await
+                .inspect_err(|e| error!("Portfolio summary computation failed: {}", e)),
+
+            Commands::Interactive {} => self.interactive_mode().await,
+        }
+    }
+
+    pub async fn interactive_mode(&self) -> Result<()> {
+        let menu_items = [
+            "Ingest (run ingestion tasks)",
+            "Health Check (check data integrity)",
+            "Maintenance (cleanup, retention, portfolio summary)",
+            "One-Time Setup (destructive / historical operations)",
+            "Help (show detailed descriptions)",
+            "Exit",
+        ];
+
+        loop {
+            println!();
+            let selection = match Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Main menu")
+                .items(&menu_items)
+                .default(0)
+                .interact()
+            {
+                Ok(s) => s,
+                Err(_) => {
+                    info!("Exiting interactive mode.");
+                    break;
                 }
-                Ok(())
+            };
+
+            let result = match selection {
+                0 => self.ingest_submenu().await,
+                1 => self.health_submenu().await,
+                2 => self.maintenance_submenu().await,
+                3 => self.setup_submenu().await,
+                4 => {
+                    Self::print_help();
+                    Ok(())
+                }
+                5 => {
+                    info!("Exiting interactive mode.");
+                    break;
+                }
+                _ => continue,
+            };
+
+            if let Err(e) = result {
+                error!("Command failed: {}", e);
             }
+        }
+        Ok(())
+    }
+
+    async fn ingest_submenu(&self) -> Result<()> {
+        let items = [
+            "Ingest All (full pipeline: sets + cards + prices + sealed, then prune + updates)",
+            "Ingest specific set (prompts for set code, then prune + updates)",
+            "Post-Ingest Prune only (foreign unpriced, empty sets, duplicate foils)",
+            "Post-Ingest Updates only (set sizes, prices, classifications, portfolio)",
+            "Back",
+        ];
+        let selection = match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Ingest")
+            .items(&items)
+            .default(0)
+            .interact()
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
+        match selection {
+            0 => {
+                self.run_full_ingest_pipeline(true, true, true, None, true, false)
+                    .await
+            }
+            1 => {
+                let set_code: String = match dialoguer::Input::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Enter set code")
+                    .interact_text()
+                {
+                    Ok(s) => s,
+                    Err(_) => return Ok(()),
+                };
+                if set_code.is_empty() {
+                    warn!("No set code entered, skipping.");
+                    return Ok(());
+                }
+                self.run_full_ingest_pipeline(false, false, false, Some(set_code), false, false)
+                    .await
+            }
+            2 => self.post_ingest_prune().await,
+            3 => self.post_ingest_updates().await,
+            _ => Ok(()),
+        }
+    }
+
+    async fn health_submenu(&self) -> Result<()> {
+        let items = [
+            "Basic (quick integrity probe)",
+            "Detailed (thorough integrity check across tables)",
+            "Back",
+        ];
+        let selection = match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Health Check")
+            .items(&items)
+            .default(0)
+            .interact()
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
+        match selection {
+            0 => self.handle_health(false).await,
+            1 => self.handle_health(true).await,
+            _ => Ok(()),
+        }
+    }
+
+    async fn maintenance_submenu(&self) -> Result<()> {
+        let items = [
+            "Cleanup (remove sets/cards that fail current filter rules)",
+            "Retention (apply tiered retention to price histories; normally run via cron)",
+            "Portfolio Summary (compute per-user summaries; normally run via cron)",
+            "Back",
+        ];
+        let selection = match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Maintenance")
+            .items(&items)
+            .default(0)
+            .interact()
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
+        match selection {
+            0 => self.handle_cleanup(true, 500).await,
+            1 => self.handle_retention().await,
+            2 => self.handle_portfolio_summary().await,
+            _ => Ok(()),
+        }
+    }
+
+    async fn setup_submenu(&self) -> Result<()> {
+        let items = [
+            "Truncate Price History [DESTRUCTIVE] (delete ALL rows from price_history)",
+            "Backfill Price History (load historical prices from AllPrices.json)",
+            "Backfill Set Price History (derive set_price_history from price_history)",
+            "Back",
+        ];
+        let selection = match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("One-Time Setup")
+            .items(&items)
+            .default(0)
+            .interact()
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
+        match selection {
+            0 => self.handle_truncate_history().await,
+            1 => self.handle_backfill(false, false).await,
+            2 => self.handle_backfill_set_price_history().await,
+            _ => Ok(()),
+        }
+    }
+
+    fn print_help() {
+        println!(
+            "{}",
+            r#"
+Scry Interactive Mode — Help
+============================
+
+INGEST
+  Ingest All               Full pipeline (matches `scry ingest`): pulls sets,
+                           cards, prices, and sealed products from Scryfall +
+                           MTGJSON, then runs prune + post-ingest updates.
+  Ingest specific set      Prompts for a set code (e.g. 'mh3'), ingests cards
+                           for that set, then runs prune + updates.
+  Post-Ingest Prune        Re-run prune only: foreign unpriced cards, empty
+                           sets, duplicate foils.
+  Post-Ingest Updates      Re-run updates only: set sizes, set prices, main-set
+                           classifications, portfolio snapshots.
+
+HEALTH CHECK
+  Basic                    Quick data integrity probe.
+  Detailed                 Thorough integrity check across tables.
+
+MAINTENANCE
+  Cleanup                  Remove sets/cards that fail current filtering rules.
+                           Run only after filter rules change.
+  Retention                Apply tiered retention to price_history,
+                           set_price_history, portfolio_value_history.
+                           Normally run weekly via cron.
+  Portfolio Summary        Compute portfolio_summary + card_performance for
+                           all users. Normally run daily via cron.
+
+ONE-TIME SETUP
+  Truncate Price History   Drop every row from price_history (requires
+                           confirm). Typically used only before a fresh backfill.
+  Backfill Price History   Load AllPrices.json from MTGJSON into price_history.
+                           One-time operation for new environments.
+  Backfill Set Price       Derive set_price_history from existing
+  History                  price_history. One-time operation.
+"#
+        );
+    }
+
+    async fn run_full_ingest_pipeline(
+        &self,
+        sets: bool,
+        cards: bool,
+        prices: bool,
+        set_cards: Option<String>,
+        sealed: bool,
+        reset: bool,
+    ) -> Result<()> {
+        let mut first_err: Option<anyhow::Error> = None;
+        if let Err(e) = self
+            .handle_ingest(sets, cards, prices, set_cards, sealed, reset)
+            .await
+        {
+            error!("Ingestion failed: {}", e);
+            first_err.get_or_insert(e);
+        }
+        if let Err(e) = self.post_ingest_prune().await {
+            error!("Post ingestion pruning failed: {}", e);
+            first_err.get_or_insert(e);
+        }
+        if let Err(e) = self.post_ingest_updates().await {
+            error!("Post ingestion updates failed: {}", e);
+            first_err.get_or_insert(e);
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 
@@ -139,46 +346,68 @@ impl CliController {
         sealed: bool,
         reset: bool,
     ) -> Result<()> {
+        let mut first_err: Option<anyhow::Error> = None;
         if reset {
             match self.reset_data().await {
                 Ok(()) => info!("Successfully reset data."),
-                Err(e) => error!("Failed to reset data: {}", e),
+                Err(e) => {
+                    error!("Failed to reset data: {}", e);
+                    first_err.get_or_insert(e);
+                }
             }
         }
         let do_all = !sets && !cards && !prices && !sealed && set_cards.is_none();
         if do_all || sets {
             match self.update_sets().await {
                 Ok(()) => info!("Successfully updated sets."),
-                Err(e) => error!("Failed to update sets: {}", e),
+                Err(e) => {
+                    error!("Failed to update sets: {}", e);
+                    first_err.get_or_insert(e);
+                }
             }
         }
         if do_all || cards {
             match self.update_cards().await {
                 Ok(()) => info!("Card update completed successfully."),
-                Err(e) => error!("Card udpate failure: {}", e),
+                Err(e) => {
+                    error!("Card udpate failure: {}", e);
+                    first_err.get_or_insert(e);
+                }
             }
         }
         if !cards {
             if let Some(set_code) = &set_cards {
                 match self.card_service.ingest_set_cards(set_code).await {
                     Ok(ingested) => info!("{} cards for set code '{}'.", ingested, set_code),
-                    Err(e) => error!("Error updating cards for set code '{}': {}", set_code, e),
+                    Err(e) => {
+                        error!("Error updating cards for set code '{}': {}", set_code, e);
+                        first_err.get_or_insert(e);
+                    }
                 }
             }
         }
         if do_all || prices {
             match self.update_prices().await {
                 Ok(()) => info!("Price update completed successfully."),
-                Err(e) => error!("Price update failure: {}", e),
+                Err(e) => {
+                    error!("Price update failure: {}", e);
+                    first_err.get_or_insert(e);
+                }
             }
         }
         if do_all || sealed {
             match self.update_sealed_products().await {
                 Ok(()) => info!("Sealed product update completed successfully."),
-                Err(e) => error!("Sealed product update failure: {}", e),
+                Err(e) => {
+                    error!("Sealed product update failure: {}", e);
+                    first_err.get_or_insert(e);
+                }
             }
         }
-        Ok(())
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     async fn handle_cleanup(&self, cards: bool, batch_size: i64) -> Result<()> {

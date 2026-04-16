@@ -11,9 +11,18 @@ cp .env.example .env  # Configure DATABASE_URL
 # Run
 cargo run -- ingest           # Full ingest (sets, cards, prices)
 cargo run -- health           # Data integrity check
+cargo run -- interactive      # Launch interactive menu
 ```
 
 ## Commands
+
+### `interactive` — Interactive menu mode
+
+Launches an interactive session with a menu of all available commands. Useful for running multiple operations in a single session without restarting the tool each time.
+
+```bash
+scry interactive
+```
 
 ### `ingest` — Ingest MTG data from Scryfall
 
@@ -97,11 +106,14 @@ Takes a daily portfolio value snapshot for all users.
 scry portfolio-summary
 ```
 
-## Docker
+## Running via Docker
+
+To test local changes against the web app's Postgres container, use `./scripts/run-local.sh <command>`. It accepts any subcommand listed above:
 
 ```bash
-docker build -t scry --target production .       # Build production image
-docker run --rm -e DATABASE_URL=... scry ingest   # Run with Docker
+./scripts/run-local.sh ingest
+./scripts/run-local.sh interactive
+./scripts/run-local.sh health
 ```
 
 ## Environment
