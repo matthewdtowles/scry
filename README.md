@@ -106,11 +106,14 @@ Takes a daily portfolio value snapshot for all users.
 scry portfolio-summary
 ```
 
-## Docker
+## Running via Docker
+
+To test local changes against the web app's Postgres container, use `./scripts/run-local.sh <command>`. It accepts any subcommand listed above:
 
 ```bash
-docker build -t scry --target production .       # Build production image
-docker run --rm -e DATABASE_URL=... scry ingest   # Run with Docker
+./scripts/run-local.sh ingest
+./scripts/run-local.sh interactive
+./scripts/run-local.sh health
 ```
 
 ## Environment
