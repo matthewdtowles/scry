@@ -47,19 +47,8 @@ impl CliController {
                 sealed,
                 reset,
             } => {
-                if let Err(e) = self
-                    .handle_ingest(sets, cards, prices, set_cards, sealed, reset)
+                self.run_full_ingest_pipeline(sets, cards, prices, set_cards, sealed, reset)
                     .await
-                {
-                    error!("Ingestion failed: {}", e);
-                }
-                if let Err(e) = self.post_ingest_prune().await {
-                    error!("Post ingestion pruning failed: {}", e);
-                }
-                if let Err(e) = self.post_ingest_updates().await {
-                    error!("Post ingestion updates failed: {}", e);
-                }
-                Ok(())
             }
 
             Commands::PostIngestPrune {} => {
@@ -133,36 +122,23 @@ impl CliController {
     }
 
     pub async fn interactive_mode(&self) -> Result<()> {
-        let menu_items = vec![
-            "Ingest All (sets, cards, prices, sealed)",
-            "Ingest Sets only",
-            "Ingest Cards only",
-            "Ingest Prices only",
-            "Ingest Sealed Products only",
-            "Ingest Cards for a specific set",
-            "Post-Ingest Prune",
-            "Post-Ingest Updates",
-            "Cleanup (sets)",
-            "Cleanup (sets + cards)",
-            "Health Check (basic)",
-            "Health Check (detailed)",
-            "Retention",
-            "Truncate History",
-            "Backfill",
-            "Backfill Set Price History",
-            "Portfolio Summary",
+        let menu_items = [
+            "Ingest (run ingestion tasks)",
+            "Health Check (check data integrity)",
+            "Maintenance (cleanup, retention, portfolio summary)",
+            "One-Time Setup (destructive / historical operations)",
+            "Help (show detailed descriptions)",
             "Exit",
         ];
 
         loop {
             println!();
-            let selection = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Select a command")
+            let selection = match Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Main menu")
                 .items(&menu_items)
                 .default(0)
-                .interact();
-
-            let selection = match selection {
+                .interact()
+            {
                 Ok(s) => s,
                 Err(_) => {
                     info!("Exiting interactive mode.");
@@ -171,34 +147,15 @@ impl CliController {
             };
 
             let result = match selection {
-                0 => self.handle_ingest(false, false, false, None, false, false).await,
-                1 => self.handle_ingest(true, false, false, None, false, false).await,
-                2 => self.handle_ingest(false, true, false, None, false, false).await,
-                3 => self.handle_ingest(false, false, true, None, false, false).await,
-                4 => self.handle_ingest(false, false, false, None, true, false).await,
-                5 => {
-                    let set_code: String = dialoguer::Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt("Enter set code")
-                        .interact_text()
-                        .unwrap_or_default();
-                    if set_code.is_empty() {
-                        warn!("No set code entered, skipping.");
-                        continue;
-                    }
-                    self.handle_ingest(false, false, false, Some(set_code), false, false).await
+                0 => self.ingest_submenu().await,
+                1 => self.health_submenu().await,
+                2 => self.maintenance_submenu().await,
+                3 => self.setup_submenu().await,
+                4 => {
+                    Self::print_help();
+                    Ok(())
                 }
-                6 => self.post_ingest_prune().await,
-                7 => self.post_ingest_updates().await,
-                8 => self.handle_cleanup(false, 500).await,
-                9 => self.handle_cleanup(true, 500).await,
-                10 => self.handle_health(false).await,
-                11 => self.handle_health(true).await,
-                12 => self.handle_retention().await,
-                13 => self.handle_truncate_history().await,
-                14 => self.handle_backfill(false, false).await,
-                15 => self.handle_backfill_set_price_history().await,
-                16 => self.handle_portfolio_summary().await,
-                17 => {
+                5 => {
                     info!("Exiting interactive mode.");
                     break;
                 }
@@ -208,6 +165,182 @@ impl CliController {
             if let Err(e) = result {
                 error!("Command failed: {}", e);
             }
+        }
+        Ok(())
+    }
+
+    async fn ingest_submenu(&self) -> Result<()> {
+        let items = [
+            "Ingest All (full pipeline: sets + cards + prices + sealed, then prune + updates)",
+            "Ingest specific set (prompts for set code, then prune + updates)",
+            "Post-Ingest Prune only (foreign unpriced, empty sets, duplicate foils)",
+            "Post-Ingest Updates only (set sizes, prices, classifications, portfolio)",
+            "Back",
+        ];
+        let selection = match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Ingest")
+            .items(&items)
+            .default(0)
+            .interact()
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
+        match selection {
+            0 => {
+                self.run_full_ingest_pipeline(false, false, false, None, false, false)
+                    .await
+            }
+            1 => {
+                let set_code: String = dialoguer::Input::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Enter set code")
+                    .interact_text()
+                    .unwrap_or_default();
+                if set_code.is_empty() {
+                    warn!("No set code entered, skipping.");
+                    return Ok(());
+                }
+                self.run_full_ingest_pipeline(false, false, false, Some(set_code), false, false)
+                    .await
+            }
+            2 => self.post_ingest_prune().await,
+            3 => self.post_ingest_updates().await,
+            _ => Ok(()),
+        }
+    }
+
+    async fn health_submenu(&self) -> Result<()> {
+        let items = [
+            "Basic (quick integrity probe)",
+            "Detailed (thorough integrity check across tables)",
+            "Back",
+        ];
+        let selection = match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Health Check")
+            .items(&items)
+            .default(0)
+            .interact()
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
+        match selection {
+            0 => self.handle_health(false).await,
+            1 => self.handle_health(true).await,
+            _ => Ok(()),
+        }
+    }
+
+    async fn maintenance_submenu(&self) -> Result<()> {
+        let items = [
+            "Cleanup (remove sets/cards that fail current filter rules)",
+            "Retention (apply tiered retention to price histories; normally run via cron)",
+            "Portfolio Summary (compute per-user summaries; normally run via cron)",
+            "Back",
+        ];
+        let selection = match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Maintenance")
+            .items(&items)
+            .default(0)
+            .interact()
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
+        match selection {
+            0 => self.handle_cleanup(true, 500).await,
+            1 => self.handle_retention().await,
+            2 => self.handle_portfolio_summary().await,
+            _ => Ok(()),
+        }
+    }
+
+    async fn setup_submenu(&self) -> Result<()> {
+        let items = [
+            "Truncate Price History [DESTRUCTIVE] (delete ALL rows from price_history)",
+            "Backfill Price History (load historical prices from AllPrices.json)",
+            "Backfill Set Price History (derive set_price_history from price_history)",
+            "Back",
+        ];
+        let selection = match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("One-Time Setup")
+            .items(&items)
+            .default(0)
+            .interact()
+        {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
+        match selection {
+            0 => self.handle_truncate_history().await,
+            1 => self.handle_backfill(false, false).await,
+            2 => self.handle_backfill_set_price_history().await,
+            _ => Ok(()),
+        }
+    }
+
+    fn print_help() {
+        println!(
+            "{}",
+            r#"
+Scry Interactive Mode — Help
+============================
+
+INGEST
+  Ingest All               Full pipeline (matches `scry ingest`): pulls sets,
+                           cards, prices, and sealed products from Scryfall +
+                           MTGJSON, then runs prune + post-ingest updates.
+  Ingest specific set      Prompts for a set code (e.g. 'mh3'), ingests cards
+                           for that set, then runs prune + updates.
+  Post-Ingest Prune        Re-run prune only: foreign unpriced cards, empty
+                           sets, duplicate foils.
+  Post-Ingest Updates      Re-run updates only: set sizes, set prices, main-set
+                           classifications, portfolio snapshots.
+
+HEALTH CHECK
+  Basic                    Quick data integrity probe.
+  Detailed                 Thorough integrity check across tables.
+
+MAINTENANCE
+  Cleanup                  Remove sets/cards that fail current filtering rules.
+                           Run only after filter rules change.
+  Retention                Apply tiered retention to price_history,
+                           set_price_history, portfolio_value_history.
+                           Normally run weekly via cron.
+  Portfolio Summary        Compute portfolio_summary + card_performance for
+                           all users. Normally run daily via cron.
+
+ONE-TIME SETUP
+  Truncate Price History   Drop every row from price_history (requires
+                           confirm). Typically used only before a fresh backfill.
+  Backfill Price History   Load AllPrices.json from MTGJSON into price_history.
+                           One-time operation for new environments.
+  Backfill Set Price       Derive set_price_history from existing
+  History                  price_history. One-time operation.
+"#
+        );
+    }
+
+    async fn run_full_ingest_pipeline(
+        &self,
+        sets: bool,
+        cards: bool,
+        prices: bool,
+        set_cards: Option<String>,
+        sealed: bool,
+        reset: bool,
+    ) -> Result<()> {
+        if let Err(e) = self
+            .handle_ingest(sets, cards, prices, set_cards, sealed, reset)
+            .await
+        {
+            error!("Ingestion failed: {}", e);
+        }
+        if let Err(e) = self.post_ingest_prune().await {
+            error!("Post ingestion pruning failed: {}", e);
+        }
+        if let Err(e) = self.post_ingest_updates().await {
+            error!("Post ingestion updates failed: {}", e);
         }
         Ok(())
     }
