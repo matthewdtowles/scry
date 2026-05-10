@@ -13,7 +13,9 @@
 .idea/
 *.sublime-project
 *.sublime-workspace
-.claude/
+.claude/*
+!.claude/skills/
+.claude/pr-review-fix-state.json
 
 # Ignore logs and temporary files
 *.log
