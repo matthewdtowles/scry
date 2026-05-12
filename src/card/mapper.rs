@@ -9,9 +9,16 @@ pub struct CardMapper;
 
 impl CardMapper {
     pub fn map_to_cards(set_data: Value) -> Result<Vec<Card>> {
-        let cards_array = set_data
+        let data_obj = set_data
             .get("data")
-            .and_then(|d| d.get("cards"))
+            .ok_or_else(|| anyhow::anyhow!("Invalid MTG JSON set structure"))?;
+        let set_type = data_obj
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let cards_array = data_obj
+            .get("cards")
             .and_then(|c| c.as_array())
             .ok_or_else(|| anyhow::anyhow!("Invalid MTG JSON set structure"))?;
 
@@ -22,11 +29,11 @@ impl CardMapper {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
             })
-            .map(|card_data| Self::map_json_to_card(card_data))
+            .map(|card_data| Self::map_json_to_card(card_data, &set_type))
             .collect()
     }
 
-    pub fn map_json_to_card(card_data: &Value) -> Result<Card> {
+    pub fn map_json_to_card(card_data: &Value, set_type: &str) -> Result<Card> {
         let id = json::extract_string(card_data, "uuid")?;
         let raw_name = json::extract_string(card_data, "name")?;
         let raw_face_name = json::extract_optional_string(card_data, "faceName");
@@ -72,7 +79,7 @@ impl CardMapper {
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        let in_main = MainSetClassifier::is_main_set_card(card_data);
+        let in_main = MainSetClassifier::is_main_set_card(card_data, set_type);
         let layout = card_data
             .get("layout")
             .and_then(|v| v.as_str())
@@ -228,7 +235,7 @@ mod tests {
     #[test]
     fn test_map_json_to_card() {
         let json = create_valid_card_json();
-        let card = CardMapper::map_json_to_card(&json).unwrap();
+        let card = CardMapper::map_json_to_card(&json, "expansion").unwrap();
         assert_eq!(card.name, "Lightning Bolt");
         assert_eq!(card.set_code, "lea");
         assert_eq!(card.number, "161");
@@ -245,7 +252,7 @@ mod tests {
         json["identifiers"]["tcgplayerProductId"] = json!("541185");
         json["identifiers"]["tcgplayerEtchedProductId"] = json!("541186");
 
-        let card = CardMapper::map_json_to_card(&json).unwrap();
+        let card = CardMapper::map_json_to_card(&json, "expansion").unwrap();
 
         assert_eq!(card.tcgplayer_product_id.as_deref(), Some("541185"));
         assert_eq!(card.tcgplayer_etched_product_id.as_deref(), Some("541186"));
@@ -253,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_map_json_leaves_tcgplayer_ids_none_when_absent() {
-        let card = CardMapper::map_json_to_card(&create_valid_card_json()).unwrap();
+        let card = CardMapper::map_json_to_card(&create_valid_card_json(), "expansion").unwrap();
         assert!(card.tcgplayer_product_id.is_none());
         assert!(card.tcgplayer_etched_product_id.is_none());
     }
@@ -262,7 +269,7 @@ mod tests {
     fn test_map_json_to_card_missing_uuid_fails() {
         let mut json = create_valid_card_json();
         json.as_object_mut().unwrap().remove("uuid");
-        assert!(CardMapper::map_json_to_card(&json).is_err());
+        assert!(CardMapper::map_json_to_card(&json, "expansion").is_err());
     }
 
     #[test]
@@ -287,6 +294,7 @@ mod tests {
         let normal_card = create_valid_card_json();
         let set_data = json!({
             "data": {
+                "type": "expansion",
                 "cards": [online_card, normal_card]
             }
         });

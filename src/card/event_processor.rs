@@ -11,7 +11,9 @@ pub struct CardEventProcessor {
     card_object_depth: usize,
     current_card_json: String,
     current_set_code: Option<String>,
+    current_set_type: Option<String>,
     expecting_cards_array: bool,
+    expecting_set_type: bool,
     in_card_object: bool,
     in_cards_array: bool,
     in_set_object: bool,
@@ -93,7 +95,9 @@ impl CardEventProcessor {
             card_object_depth: 0,
             current_card_json: String::new(),
             current_set_code: None,
+            current_set_type: None,
             expecting_cards_array: false,
+            expecting_set_type: false,
             in_card_object: false,
             in_cards_array: false,
             in_set_object: false,
@@ -107,7 +111,9 @@ impl CardEventProcessor {
         // Critical: Reset ALL set state immediately when entering a new set object
         if self.json_depth == 2 {
             self.current_set_code = None;
+            self.current_set_type = None;
             self.expecting_cards_array = false;
+            self.expecting_set_type = false;
             self.in_set_object = true;
         }
         // Handle card objects within the cards array
@@ -205,6 +211,9 @@ impl CardEventProcessor {
             "cards" if self.json_depth == 3 => {
                 self.expecting_cards_array = true;
             }
+            "type" if self.json_depth == 3 && !self.in_card_object => {
+                self.expecting_set_type = true;
+            }
             _ if self.in_card_object => {
                 if !self.current_card_json.ends_with('{') {
                     self.current_card_json.push(',');
@@ -230,6 +239,11 @@ impl CardEventProcessor {
     }
 
     fn handle_string_value(&mut self, value: &str) -> Result<usize> {
+        if self.expecting_set_type {
+            self.current_set_type = Some(String::from(value));
+            self.expecting_set_type = false;
+            return Ok(0);
+        }
         // Handle card object values
         if self.in_card_object {
             // Check if we need a comma
@@ -300,6 +314,7 @@ impl CardEventProcessor {
 
     fn parse_card_from_json(&self, json: &str) -> Result<Card> {
         let value: serde_json::Value = serde_json::from_str(json)?;
-        CardMapper::map_json_to_card(&value)
+        let set_type = self.current_set_type.as_deref().unwrap_or("");
+        CardMapper::map_json_to_card(&value, set_type)
     }
 }
