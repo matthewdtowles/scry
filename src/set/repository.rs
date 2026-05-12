@@ -405,11 +405,39 @@ impl SetRepository {
         Ok(total)
     }
 
+    /// Set codes that MTGJSON tags as `type=expansion` but are functionally
+    /// bonus mini-sets attached to a parent expansion. MTGJSON is inconsistent
+    /// about populating `parentCode`, so this list catches the gaps.
+    ///
+    /// Add a code here when you find an expansion-type set that should be
+    /// classified as bonus. Document why in a comment so future readers know
+    /// what each entry represents.
+    const BONUS_EXPANSION_OVERRIDES: &'static [&'static str] = &[
+        // March of the Machine: The Aftermath - epilogue mini-set released
+        // 3 weeks after MOM. MTGJSON does not populate parentCode for it.
+        "mat",
+    ];
+
     pub async fn update_is_main(&self) -> Result<i64> {
-        let qb = QueryBuilder::new(
-            "UPDATE \"set\" SET is_main = (base_size > 0 AND type != 'masterpiece')
-            WHERE is_main IS DISTINCT FROM (base_size > 0 AND type != 'masterpiece')",
+        let overrides_clause = if Self::BONUS_EXPANSION_OVERRIDES.is_empty() {
+            String::new()
+        } else {
+            let list = Self::BONUS_EXPANSION_OVERRIDES
+                .iter()
+                .map(|c| format!("'{}'", c))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(" AND code NOT IN ({})", list)
+        };
+        let derived = format!(
+            "(type IN ('expansion','core') AND parent_code IS NULL{})",
+            overrides_clause
         );
+        let sql = format!(
+            "UPDATE \"set\" SET is_main = {derived}
+            WHERE is_main IS DISTINCT FROM {derived}"
+        );
+        let qb = QueryBuilder::new(sql);
         self.db.execute_query_builder(qb).await
     }
 
