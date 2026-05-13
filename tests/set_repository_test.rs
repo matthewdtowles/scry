@@ -91,6 +91,176 @@ async fn test_delete_set_batch() {
 
 #[tokio::test]
 #[ignore]
+async fn test_update_is_main_block_children_stay_main() {
+    // Block-children (Dark Ascension, Eldritch Moon, Born of the Gods, …)
+    // are full main expansions and must stay is_main=true even after
+    // update_parent_codes stamps a parent_code onto them.
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db.clone());
+
+    let mut isd = common::create_test_set("im01");
+    isd.name = "Innistrad".to_string();
+    isd.block = Some("Innistrad Test".to_string());
+    isd.set_type = "expansion".to_string();
+    isd.base_size = 264;
+    isd.release_date = chrono::NaiveDate::from_ymd_opt(2011, 9, 30).unwrap();
+
+    let mut dka = common::create_test_set("im02");
+    dka.name = "Dark Ascension".to_string();
+    dka.block = Some("Innistrad Test".to_string());
+    dka.set_type = "expansion".to_string();
+    dka.base_size = 158;
+    dka.release_date = chrono::NaiveDate::from_ymd_opt(2012, 2, 3).unwrap();
+
+    repo.save_sets(&[isd, dka]).await.unwrap();
+    repo.update_is_main().await.unwrap();
+    repo.update_parent_codes().await.unwrap();
+    // Re-run is_main after parent_codes to prove order independence —
+    // the result must not change.
+    repo.update_is_main().await.unwrap();
+
+    let main_count = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code IN ('im01','im02') AND is_main = true")
+        .await
+        .unwrap();
+    assert_eq!(
+        main_count, 2,
+        "Both Innistrad (canonical) and Dark Ascension (block-child) should be is_main=true"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_update_is_main_bonus_overrides() {
+    // BIG, TSB, MAT are the documented bonus-sheet overrides. They must
+    // flip is_main=false regardless of parent_code state.
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db.clone());
+
+    let mut big = common::create_test_set("big");
+    big.name = "The Big Score".to_string();
+    big.set_type = "expansion".to_string();
+    big.parent_code = Some("otj".to_string());
+    big.base_size = 30;
+
+    let mut tsb = common::create_test_set("tsb");
+    tsb.name = "Time Spiral Timeshifted".to_string();
+    tsb.set_type = "expansion".to_string();
+    tsb.base_size = 121;
+
+    let mut mat = common::create_test_set("mat");
+    mat.name = "March of the Machine: The Aftermath".to_string();
+    mat.set_type = "expansion".to_string();
+    mat.base_size = 50;
+
+    repo.save_sets(&[big, tsb, mat]).await.unwrap();
+    repo.update_is_main().await.unwrap();
+
+    let main_count = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code IN ('big','tsb','mat') AND is_main = true")
+        .await
+        .unwrap();
+    assert_eq!(
+        main_count, 0,
+        "All three documented bonus sheets must be is_main=false"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_update_is_main_non_expansion_types_excluded() {
+    // commander, draft_innovation, masterpiece, promo, funny, starter must
+    // all be is_main=false. Only expansion + core qualify.
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db.clone());
+
+    let types = [
+        ("nm01", "commander"),
+        ("nm02", "draft_innovation"),
+        ("nm03", "masterpiece"),
+        ("nm04", "promo"),
+        ("nm05", "funny"),
+        ("nm06", "starter"),
+        ("nm07", "duel_deck"),
+        ("nm08", "masters"),
+    ];
+    let sets: Vec<_> = types
+        .iter()
+        .map(|(code, t)| {
+            let mut s = common::create_test_set(code);
+            s.set_type = t.to_string();
+            s.base_size = 200;
+            s
+        })
+        .collect();
+
+    repo.save_sets(&sets).await.unwrap();
+    repo.update_is_main().await.unwrap();
+
+    let main_count = db
+        .count(
+            "SELECT COUNT(*) FROM \"set\" WHERE code LIKE 'nm0%' AND is_main = true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        main_count, 0,
+        "Non-expansion/core types must never be is_main=true"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_update_is_main_order_independent() {
+    // The same input data must produce the same is_main result regardless
+    // of whether update_parent_codes ran before or after update_is_main.
+    // This is the regression guard against the prior ordering accident.
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db.clone());
+
+    let mut parent = common::create_test_set("oi01");
+    parent.name = "Test Parent Set".to_string();
+    parent.block = Some("Order Independence Block".to_string());
+    parent.set_type = "expansion".to_string();
+    parent.base_size = 280;
+    parent.release_date = chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+
+    let mut child = common::create_test_set("oi02");
+    child.name = "Test Child Expansion".to_string();
+    child.block = Some("Order Independence Block".to_string());
+    child.set_type = "expansion".to_string();
+    child.base_size = 165;
+    child.release_date = chrono::NaiveDate::from_ymd_opt(2020, 6, 1).unwrap();
+
+    repo.save_sets(&[parent, child]).await.unwrap();
+
+    // Order A: parent_codes first, then is_main
+    repo.update_parent_codes().await.unwrap();
+    repo.update_is_main().await.unwrap();
+    let main_after_a = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code IN ('oi01','oi02') AND is_main = true")
+        .await
+        .unwrap();
+
+    // Order B: is_main first, then parent_codes (then is_main again to
+    // confirm idempotency)
+    repo.update_is_main().await.unwrap();
+    repo.update_parent_codes().await.unwrap();
+    repo.update_is_main().await.unwrap();
+    let main_after_b = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code IN ('oi01','oi02') AND is_main = true")
+        .await
+        .unwrap();
+
+    assert_eq!(main_after_a, 2, "Both sets should be main under order A");
+    assert_eq!(
+        main_after_a, main_after_b,
+        "is_main result must be identical regardless of execution order"
+    );
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_update_parent_codes_breaks_circular_references() {
     let db = common::setup_test_db().await;
     let repo = SetRepository::new(db.clone());

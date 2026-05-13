@@ -405,19 +405,46 @@ impl SetRepository {
         Ok(total)
     }
 
-    /// Set codes that MTGJSON tags as `type=expansion` but are functionally
-    /// bonus mini-sets attached to a parent expansion. MTGJSON is inconsistent
-    /// about populating `parentCode`, so this list catches the gaps.
+    /// Set codes that MTGJSON tags as `type=expansion` (or `core`) but are
+    /// functionally bonus sheets attached to a parent product. These are the
+    /// authoritative source for excluding bonus sheets from `is_main`.
     ///
-    /// Add a code here when you find an expansion-type set that should be
-    /// classified as bonus. Document why in a comment so future readers know
+    /// Why an override list instead of a derived rule: MTGJSON's signals
+    /// (`parentCode`, `block`) are unreliable and overlap with legitimate
+    /// block-child expansions (Dark Ascension, Eldritch Moon, Born of the
+    /// Gods, etc.) which ARE main expansions and must stay `is_main = true`.
+    /// No combination of those columns cleanly separates bonus sheets from
+    /// block children, so we list bonus sheets explicitly here.
+    ///
+    /// Add a code here when you find an expansion/core-type set that should
+    /// be classified as a bonus sheet. Document why so future readers know
     /// what each entry represents.
     const BONUS_EXPANSION_OVERRIDES: &'static [&'static str] = &[
+        // The Big Score - 30-card bonus sheet attached to Outlaws of
+        // Thunder Junction (OTJ). MTGJSON populates parentCode='otj'.
+        "big",
         // March of the Machine: The Aftermath - epilogue mini-set released
         // 3 weeks after MOM. MTGJSON does not populate parentCode for it.
         "mat",
+        // Time Spiral Timeshifted - bonus sheet of Time Spiral (TSP).
+        // Scryfall/MTGJSON have tsp and tsb pointing at each other
+        // circularly; scry's parent_code normalization fixes that but the
+        // set itself is a bonus sheet and not a main expansion.
+        "tsb",
     ];
 
+    /// Set `is_main = true` for sets that should appear in the default
+    /// browse / search listing. Rule: `type IN ('expansion','core')`
+    /// EXCEPT for codes in `BONUS_EXPANSION_OVERRIDES`.
+    ///
+    /// Intentionally does NOT depend on `parent_code`. Block-children
+    /// (Dark Ascension, Eldritch Moon, Stronghold, …) point at their
+    /// block's canonical parent code but are full main expansions and
+    /// must stay `is_main = true`. The earlier `parent_code IS NULL`
+    /// rule was over-aggressive and only produced correct results
+    /// because `update_parent_codes` ran after `update_is_main` and
+    /// the block-children still had `parent_code = NULL` at evaluation
+    /// time. This rule is order-independent.
     pub async fn update_is_main(&self) -> Result<i64> {
         let overrides_clause = if Self::BONUS_EXPANSION_OVERRIDES.is_empty() {
             String::new()
@@ -430,7 +457,7 @@ impl SetRepository {
             format!(" AND code NOT IN ({})", list)
         };
         let derived = format!(
-            "(type IN ('expansion','core') AND parent_code IS NULL{})",
+            "(type IN ('expansion','core'){})",
             overrides_clause
         );
         let sql = format!(
