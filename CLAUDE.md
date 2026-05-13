@@ -115,3 +115,13 @@ Uses SQLx with the `runtime-tokio-rustls` feature. The `ConnectionPool` struct w
 ### Card Filtering
 
 Cards go through `should_filter()` and `merge_and_filter_cards()` during ingestion. Split cards are merged (combining mana costs from both faces). Foreign cards without prices are pruned post-ingest. The `MainSetClassifier` determines whether a card belongs to a set's "main" (base) subset.
+
+### `is_main` Classification
+
+Two independent concepts, both stored as boolean columns:
+
+- **`card.in_main`** — Is this card in the booster's main slot (vs. bonus / showcase / variant) within its own set. Determined by `MainSetClassifier::is_main_set_card` in `src/card/domain/main_set_classifier.rs`. Reads MTGJSON's `boosterTypes`; when absent, falls back to intrinsic per-card signals (borderColor, frameEffects, availability) gated to booster-bearing set types (`expansion`, `core`, `draft_innovation`, `masters`, `funny`).
+
+- **`set.is_main`** — Does this set appear in the default browse listing. Rule: `type IN ('expansion','core') AND code NOT IN BONUS_EXPANSION_OVERRIDES`. The override list (`SetRepository::BONUS_EXPANSION_OVERRIDES`) is the authoritative source for excluding bonus-sheet sets (BIG, TSB, MAT) that MTGJSON mistypes as `expansion`. Intentionally does NOT depend on `parent_code` — block-children (Dark Ascension, Eldritch Moon, …) get a parent_code from scry's canonical-parent normalization but are full main expansions and stay `is_main=true`. The rule is order-independent w.r.t. `update_parent_codes`.
+
+To add a newly-discovered bonus sheet to the exclusion list, append its lowercase code to `BONUS_EXPANSION_OVERRIDES` with a comment explaining what it is. Tests in `tests/set_repository_test.rs` cover the rule's behavior and order-independence.
