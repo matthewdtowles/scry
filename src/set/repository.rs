@@ -419,7 +419,7 @@ impl SetRepository {
     /// Add a code here when you find an expansion/core-type set that should
     /// be classified as a bonus sheet. Document why so future readers know
     /// what each entry represents.
-    const BONUS_EXPANSION_OVERRIDES: &'static [&'static str] = &[
+    const BONUS_MAIN_SET_OVERRIDES: &'static [&'static str] = &[
         // The Big Score - 30-card bonus sheet attached to Outlaws of
         // Thunder Junction (OTJ). MTGJSON populates parentCode='otj'.
         "big",
@@ -435,7 +435,7 @@ impl SetRepository {
 
     /// Set `is_main = true` for sets that should appear in the default
     /// browse / search listing. Rule: `type IN ('expansion','core')`
-    /// EXCEPT for codes in `BONUS_EXPANSION_OVERRIDES`.
+    /// EXCEPT for codes in `BONUS_MAIN_SET_OVERRIDES`.
     ///
     /// Intentionally does NOT depend on `parent_code`. Block-children
     /// (Dark Ascension, Eldritch Moon, Stronghold, …) point at their
@@ -446,25 +446,17 @@ impl SetRepository {
     /// the block-children still had `parent_code = NULL` at evaluation
     /// time. This rule is order-independent.
     pub async fn update_is_main(&self) -> Result<i64> {
-        let overrides_clause = if Self::BONUS_EXPANSION_OVERRIDES.is_empty() {
-            String::new()
-        } else {
-            let list = Self::BONUS_EXPANSION_OVERRIDES
-                .iter()
-                .map(|c| format!("'{}'", c))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!(" AND code NOT IN ({})", list)
-        };
-        let derived = format!(
-            "(type IN ('expansion','core'){})",
-            overrides_clause
+        let overrides: Vec<String> = Self::BONUS_MAIN_SET_OVERRIDES
+            .iter()
+            .map(|c| (*c).to_string())
+            .collect();
+        let mut qb = QueryBuilder::new(
+            "UPDATE \"set\" SET is_main = (type IN ('expansion','core') AND code <> ALL(",
         );
-        let sql = format!(
-            "UPDATE \"set\" SET is_main = {derived}
-            WHERE is_main IS DISTINCT FROM {derived}"
-        );
-        let qb = QueryBuilder::new(sql);
+        qb.push_bind(overrides.clone());
+        qb.push(")) WHERE is_main IS DISTINCT FROM (type IN ('expansion','core') AND code <> ALL(");
+        qb.push_bind(overrides);
+        qb.push("))");
         self.db.execute_query_builder(qb).await
     }
 

@@ -115,6 +115,20 @@ async fn test_update_is_main_block_children_stay_main() {
     repo.save_sets(&[isd, dka]).await.unwrap();
     repo.update_is_main().await.unwrap();
     repo.update_parent_codes().await.unwrap();
+
+    // Sanity-check that update_parent_codes actually stamped a non-NULL
+    // parent_code onto im02. Otherwise the rest of this test would silently
+    // degrade into "is_main on rows with no parent_code" — not the scenario
+    // we're trying to validate.
+    let im02_parent_set = db
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'im02' AND parent_code = 'im01'")
+        .await
+        .unwrap();
+    assert_eq!(
+        im02_parent_set, 1,
+        "update_parent_codes must set im02.parent_code = 'im01' for this test to be meaningful"
+    );
+
     // Re-run is_main after parent_codes to prove order independence —
     // the result must not change.
     repo.update_is_main().await.unwrap();
@@ -218,37 +232,47 @@ async fn test_update_is_main_order_independent() {
     let db = common::setup_test_db().await;
     let repo = SetRepository::new(db.clone());
 
-    let mut parent = common::create_test_set("oi01");
-    parent.name = "Test Parent Set".to_string();
-    parent.block = Some("Order Independence Block".to_string());
-    parent.set_type = "expansion".to_string();
-    parent.base_size = 280;
-    parent.release_date = chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+    let seed = |codes: (&'static str, &'static str)| {
+        let mut parent = common::create_test_set(codes.0);
+        parent.name = "Test Parent Set".to_string();
+        parent.block = Some("Order Independence Block".to_string());
+        parent.set_type = "expansion".to_string();
+        parent.base_size = 280;
+        parent.release_date = chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
 
-    let mut child = common::create_test_set("oi02");
-    child.name = "Test Child Expansion".to_string();
-    child.block = Some("Order Independence Block".to_string());
-    child.set_type = "expansion".to_string();
-    child.base_size = 165;
-    child.release_date = chrono::NaiveDate::from_ymd_opt(2020, 6, 1).unwrap();
+        let mut child = common::create_test_set(codes.1);
+        child.name = "Test Child Expansion".to_string();
+        child.block = Some("Order Independence Block".to_string());
+        child.set_type = "expansion".to_string();
+        child.base_size = 165;
+        child.release_date = chrono::NaiveDate::from_ymd_opt(2020, 6, 1).unwrap();
 
-    repo.save_sets(&[parent, child]).await.unwrap();
+        vec![parent, child]
+    };
 
-    // Order A: parent_codes first, then is_main
+    // Order A uses one pair of codes, Order B uses another. Each sequence
+    // therefore starts from an identical fresh input state (same shape, same
+    // block, same types) and is unaffected by the other run's mutations —
+    // which is the only way to truly compare the two orderings.
+    let codes_a = ("oi01a", "oi02a");
+    let codes_b = ("oi01b", "oi02b");
+
+    // Order A: parent_codes → is_main
+    repo.save_sets(&seed(codes_a)).await.unwrap();
     repo.update_parent_codes().await.unwrap();
     repo.update_is_main().await.unwrap();
     let main_after_a = db
-        .count("SELECT COUNT(*) FROM \"set\" WHERE code IN ('oi01','oi02') AND is_main = true")
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code IN ('oi01a','oi02a') AND is_main = true")
         .await
         .unwrap();
 
-    // Order B: is_main first, then parent_codes (then is_main again to
-    // confirm idempotency)
+    // Order B: is_main → parent_codes (no second is_main pass — this is the
+    // pipeline shape Copilot flagged as the one a weaker test could miss)
+    repo.save_sets(&seed(codes_b)).await.unwrap();
     repo.update_is_main().await.unwrap();
     repo.update_parent_codes().await.unwrap();
-    repo.update_is_main().await.unwrap();
     let main_after_b = db
-        .count("SELECT COUNT(*) FROM \"set\" WHERE code IN ('oi01','oi02') AND is_main = true")
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code IN ('oi01b','oi02b') AND is_main = true")
         .await
         .unwrap();
 
