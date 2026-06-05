@@ -1,5 +1,5 @@
 use crate::database::ConnectionPool;
-use crate::price::domain::Price;
+use crate::price::domain::{GranularPrice, Price};
 use anyhow::Result;
 use chrono::NaiveDate;
 use sqlx::QueryBuilder;
@@ -17,6 +17,7 @@ pub struct PriceRepository {
 impl PriceRepository {
     const PRICE_TABLE: &str = "price";
     const PRICE_HISTORY_TABLE: &str = "price_history";
+    const GRANULAR_PRICE_TABLE: &str = "granular_price";
 
     pub fn new(db: Arc<ConnectionPool>) -> Self {
         Self { db }
@@ -53,6 +54,41 @@ impl PriceRepository {
 
     pub async fn save_price_history(&self, prices: &[Price]) -> Result<i64> {
         self.save(prices, Self::PRICE_HISTORY_TABLE).await
+    }
+
+    /// Upsert granular rows. price is overwritten (last writer wins — MTGJSON is
+    /// ingested before CK-direct, so CK-direct's authoritative row lands last);
+    /// qty is preserved when the new row has none (MTGJSON carries no qty).
+    pub async fn save_granular_prices(&self, prices: &[GranularPrice]) -> Result<i64> {
+        if prices.is_empty() {
+            return Ok(0);
+        }
+        let mut query_builder = QueryBuilder::new(format!(
+            "INSERT INTO {} (card_id, provider, price_type, finish, condition, date, price, qty) ",
+            Self::GRANULAR_PRICE_TABLE
+        ));
+        query_builder.push_values(prices, |mut b, price| {
+            b.push_bind(&price.card_id)
+                .push_bind(&price.provider)
+                .push_bind(&price.price_type)
+                .push_bind(&price.finish)
+                .push_bind(&price.condition)
+                .push_bind(&price.date)
+                .push_bind(&price.price)
+                .push_bind(&price.qty);
+        });
+        query_builder.push(
+            " ON CONFLICT (card_id, provider, price_type, finish, condition, date) \
+              DO UPDATE SET price = EXCLUDED.price, \
+              qty = COALESCE(EXCLUDED.qty, granular_price.qty)",
+        );
+        match self.db.execute_query_builder(query_builder).await {
+            Ok(count) => Ok(count),
+            Err(e) => {
+                error!("Database error: {:?}", e);
+                Err(e.into())
+            }
+        }
     }
 
     pub async fn delete_all(&self) -> Result<i64> {

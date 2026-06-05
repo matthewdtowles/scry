@@ -3,9 +3,12 @@ mod common;
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use scry::card::repository::CardRepository;
-use scry::price::domain::Price;
+use scry::database::ConnectionPool;
+use scry::price::domain::{GranularPrice, Price};
 use scry::price::repository::PriceRepository;
 use scry::set::repository::SetRepository;
+use sqlx::QueryBuilder;
+use std::sync::Arc;
 
 fn create_test_price(card_id: &str, normal: f64, foil: f64) -> Price {
     Price {
@@ -153,4 +156,67 @@ async fn test_fetch_prices_for_card_ids() {
     let (normal, foil) = map.get("p05-c1").unwrap();
     assert!(normal.is_some());
     assert!(foil.is_some());
+}
+
+fn create_test_granular(card_id: &str, price: Decimal, qty: Option<i32>) -> GranularPrice {
+    GranularPrice {
+        card_id: card_id.to_string(),
+        provider: "cardkingdom".to_string(),
+        price_type: "buylist".to_string(),
+        finish: "normal".to_string(),
+        condition: "NM".to_string(),
+        date: NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
+        price,
+        qty,
+    }
+}
+
+async fn fetch_granular(db: &Arc<ConnectionPool>, card_id: &str) -> (Decimal, Option<i32>) {
+    let mut qb = QueryBuilder::new("SELECT price, qty FROM granular_price WHERE card_id = ");
+    qb.push_bind(card_id.to_string());
+    let rows: Vec<(Decimal, Option<i32>)> = db.fetch_all_query_builder(qb).await.unwrap();
+    rows.into_iter().next().expect("granular row should exist")
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_save_granular_prices_upsert_overwrites_price_preserves_qty() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+    let price_repo = PriceRepository::new(db.clone());
+
+    set_repo
+        .save_sets(&[common::create_test_set("p10")])
+        .await
+        .unwrap();
+    card_repo
+        .save_cards(&[common::create_test_card("p10-c1", "p10")])
+        .await
+        .unwrap();
+
+    // MTGJSON-style insert: a buylist price, no qty.
+    let n = price_repo
+        .save_granular_prices(&[create_test_granular("p10-c1", Decimal::new(350, 2), None)])
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+
+    // CK-direct-style upsert on the same key: new price, real qty.
+    price_repo
+        .save_granular_prices(&[create_test_granular("p10-c1", Decimal::new(375, 2), Some(10))])
+        .await
+        .unwrap();
+    let (price, qty) = fetch_granular(&db, "p10-c1").await;
+    assert_eq!(price, Decimal::new(375, 2));
+    assert_eq!(qty, Some(10));
+
+    // A later qty-less upsert overwrites price but preserves qty via COALESCE.
+    price_repo
+        .save_granular_prices(&[create_test_granular("p10-c1", Decimal::new(360, 2), None)])
+        .await
+        .unwrap();
+    let (price, qty) = fetch_granular(&db, "p10-c1").await;
+    assert_eq!(price, Decimal::new(360, 2));
+    assert_eq!(qty, Some(10));
 }

@@ -1,4 +1,4 @@
-use crate::price::domain::Price;
+use crate::price::domain::{CardPrices, GranularPrice, Price};
 use crate::price::event_processor::PriceEventProcessor;
 use crate::price::historical_event_processor::HistoricalPriceEventProcessor;
 use crate::price::repository::PriceRepository;
@@ -183,18 +183,36 @@ impl PriceService {
 
     async fn save_prices(
         &self,
-        prices: Vec<Price>,
+        card_prices: Vec<CardPrices>,
         valid_card_ids: &std::collections::HashSet<String>,
     ) -> Result<()> {
-        let filtered_prices: Vec<Price> = prices
-            .into_iter()
-            .filter(|p| valid_card_ids.contains(&p.card_id))
-            .collect();
-        if !filtered_prices.is_empty() {
-            let saved_count = self.repository.save_prices(&filtered_prices).await?;
+        // Split the per-card bundle into derived averages (for the existing
+        // price/price_history tables) and granular rows (for granular_price),
+        // filtering both to known card ids in a single pass.
+        let mut averages: Vec<Price> = Vec::new();
+        let mut granular: Vec<GranularPrice> = Vec::new();
+        for cp in card_prices {
+            if let Some(avg) = cp.average {
+                if valid_card_ids.contains(&avg.card_id) {
+                    averages.push(avg);
+                }
+            }
+            for row in cp.granular {
+                if valid_card_ids.contains(&row.card_id) {
+                    granular.push(row);
+                }
+            }
+        }
+
+        if !averages.is_empty() {
+            let saved_count = self.repository.save_prices(&averages).await?;
             debug!("Saved batch of {} prices to price table.", saved_count);
-            let history_count = self.repository.save_price_history(&filtered_prices).await?;
+            let history_count = self.repository.save_price_history(&averages).await?;
             debug!("Saved batch of {} prices to history table.", history_count);
+        }
+        if !granular.is_empty() {
+            let granular_count = self.repository.save_granular_prices(&granular).await?;
+            debug!("Saved batch of {} granular price rows.", granular_count);
         }
         Ok(())
     }
