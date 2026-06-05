@@ -15,6 +15,8 @@ const BATCH_SIZE: usize = 500;
 pub struct RetentionResult {
     pub weekly_deleted: i64,
     pub monthly_deleted: i64,
+    pub granular_weekly_deleted: i64,
+    pub granular_monthly_deleted: i64,
     pub total_deleted: i64,
 }
 
@@ -146,10 +148,19 @@ impl PriceService {
         let monthly_deleted = self.repository.apply_monthly_retention().await?;
         info!("Monthly period: deleted {} rows", monthly_deleted);
 
-        let total_deleted = weekly_deleted + monthly_deleted;
+        let granular_weekly_deleted = self.repository.apply_granular_weekly_retention().await?;
+        info!("Granular weekly period: deleted {} rows", granular_weekly_deleted);
+
+        let granular_monthly_deleted = self.repository.apply_granular_monthly_retention().await?;
+        info!("Granular monthly period: deleted {} rows", granular_monthly_deleted);
+
+        let total_deleted =
+            weekly_deleted + monthly_deleted + granular_weekly_deleted + granular_monthly_deleted;
         Ok(RetentionResult {
             weekly_deleted,
             monthly_deleted,
+            granular_weekly_deleted,
+            granular_monthly_deleted,
             total_deleted,
         })
     }
