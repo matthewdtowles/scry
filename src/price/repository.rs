@@ -63,32 +63,39 @@ impl PriceRepository {
         if prices.is_empty() {
             return Ok(0);
         }
-        let mut query_builder = QueryBuilder::new(format!(
-            "INSERT INTO {} (card_id, provider, price_type, finish, condition, date, price, qty) ",
-            Self::GRANULAR_PRICE_TABLE
-        ));
-        query_builder.push_values(prices, |mut b, price| {
-            b.push_bind(&price.card_id)
-                .push_bind(&price.provider)
-                .push_bind(&price.price_type)
-                .push_bind(&price.finish)
-                .push_bind(&price.condition)
-                .push_bind(&price.date)
-                .push_bind(&price.price)
-                .push_bind(&price.qty);
-        });
-        query_builder.push(
-            " ON CONFLICT (card_id, provider, price_type, finish, condition, date) \
-              DO UPDATE SET price = EXCLUDED.price, \
-              qty = COALESCE(EXCLUDED.qty, granular_price.qty)",
-        );
-        match self.db.execute_query_builder(query_builder).await {
-            Ok(count) => Ok(count),
-            Err(e) => {
-                error!("Database error: {:?}", e);
-                Err(e.into())
+        // Chunk so a large batch can't exceed Postgres's 65535 bind-param limit
+        // (8 binds/row).
+        const CHUNK: usize = 4000;
+        let mut total = 0;
+        for chunk in prices.chunks(CHUNK) {
+            let mut query_builder = QueryBuilder::new(format!(
+                "INSERT INTO {} (card_id, provider, price_type, finish, condition, date, price, qty) ",
+                Self::GRANULAR_PRICE_TABLE
+            ));
+            query_builder.push_values(chunk, |mut b, price| {
+                b.push_bind(&price.card_id)
+                    .push_bind(&price.provider)
+                    .push_bind(&price.price_type)
+                    .push_bind(&price.finish)
+                    .push_bind(&price.condition)
+                    .push_bind(&price.date)
+                    .push_bind(&price.price)
+                    .push_bind(&price.qty);
+            });
+            query_builder.push(
+                " ON CONFLICT (card_id, provider, price_type, finish, condition, date) \
+                  DO UPDATE SET price = EXCLUDED.price, \
+                  qty = COALESCE(EXCLUDED.qty, granular_price.qty)",
+            );
+            match self.db.execute_query_builder(query_builder).await {
+                Ok(count) => total += count,
+                Err(e) => {
+                    error!("Database error: {:?}", e);
+                    return Err(e.into());
+                }
             }
         }
+        Ok(total)
     }
 
     pub async fn delete_all(&self) -> Result<i64> {
@@ -203,32 +210,39 @@ impl PriceRepository {
         if prices.is_empty() {
             return Ok(0);
         }
-        let query = format!("INSERT INTO {} (card_id, foil, normal, date) ", table);
-        let mut query_builder = QueryBuilder::new(query);
-        query_builder.push_values(prices, |mut b, price| {
-            b.push_bind(&price.card_id)
-                .push_bind(&price.foil)
-                .push_bind(&price.normal)
-                .push_bind(&price.date);
-        });
-        query_builder.push(
-            " ON CONFLICT (card_id, date) DO UPDATE SET
-            foil = COALESCE(EXCLUDED.foil, ",
-        );
-        query_builder.push(table);
-        query_builder.push(
-            ".foil),
-            normal = COALESCE(EXCLUDED.normal, ",
-        );
-        query_builder.push(table);
-        query_builder.push(".normal)");
-        match self.db.execute_query_builder(query_builder).await {
-            Ok(count) => Ok(count),
-            Err(e) => {
-                error!("Database error: {:?}", e);
-                Err(e.into())
+        // Chunk so a large batch can't exceed Postgres's 65535 bind-param limit
+        // (4 binds/row).
+        const CHUNK: usize = 8000;
+        let mut total = 0;
+        for chunk in prices.chunks(CHUNK) {
+            let query = format!("INSERT INTO {} (card_id, foil, normal, date) ", table);
+            let mut query_builder = QueryBuilder::new(query);
+            query_builder.push_values(chunk, |mut b, price| {
+                b.push_bind(&price.card_id)
+                    .push_bind(&price.foil)
+                    .push_bind(&price.normal)
+                    .push_bind(&price.date);
+            });
+            query_builder.push(
+                " ON CONFLICT (card_id, date) DO UPDATE SET
+                foil = COALESCE(EXCLUDED.foil, ",
+            );
+            query_builder.push(table);
+            query_builder.push(
+                ".foil),
+                normal = COALESCE(EXCLUDED.normal, ",
+            );
+            query_builder.push(table);
+            query_builder.push(".normal)");
+            match self.db.execute_query_builder(query_builder).await {
+                Ok(count) => total += count,
+                Err(e) => {
+                    error!("Database error: {:?}", e);
+                    return Err(e.into());
+                }
             }
         }
+        Ok(total)
     }
 
     pub async fn update_price_change_weekly(&self) -> Result<i64> {

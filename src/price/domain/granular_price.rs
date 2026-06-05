@@ -57,13 +57,15 @@ impl GranularPrice {
     }
 }
 
-/// A card's full price contribution from one ingest pass: the granular rows for
-/// every provider/type/finish, plus the derived averaged retail price that
-/// feeds the existing `price` table. Both come from the same stream pass so the
-/// `price` table stays exactly as before while the granular store fills.
+/// A card's full price contribution from one stream pass: the granular rows for
+/// every provider/type/finish/date, plus the derived averaged retail price(s)
+/// that feed the existing `price`/`price_history` tables. Both come from the
+/// same pass so those tables stay exactly as before while the granular store
+/// fills. `averages` holds one entry per date — 0 or 1 for today's ingest, many
+/// for the historical (multi-date) ingest.
 #[derive(Clone, Debug, Default)]
 pub struct CardPrices {
-    pub average: Option<Price>,
+    pub averages: Vec<Price>,
     pub granular: Vec<GranularPrice>,
 }
 
