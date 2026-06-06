@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS granular_price (
     finish VARCHAR NOT NULL,
     condition VARCHAR NOT NULL DEFAULT 'NM',
     date DATE NOT NULL,
-    price NUMERIC(10,2),
+    price NUMERIC(10,2) NOT NULL,
     qty INTEGER,
     PRIMARY KEY (card_id, provider, price_type, finish, condition, date)
 );

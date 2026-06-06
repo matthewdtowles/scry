@@ -201,7 +201,7 @@ impl PriceService {
         }
         if !granular.is_empty() {
             let granular_count = self.repository.save_granular_prices(&granular).await?;
-            debug!("Saved batch of {} granular price rows to history.", granular_count);
+            debug!("Saved batch of {} granular price rows.", granular_count);
         }
         Ok(())
     }

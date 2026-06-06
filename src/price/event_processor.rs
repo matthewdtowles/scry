@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 /// - one `GranularPrice` row per (provider, retail|buylist, finish, date), and
 /// - the derived averaged retail price (`PriceAccumulator`) for the `price` table.
 ///
-/// The average is retail-only across `ALLOWED_PROVIDERS`, exactly as before, so
+/// The average is retail-only across `AVERAGE_PROVIDERS`, exactly as before, so
 /// the existing `price`/`price_history` tables are unchanged while the granular
 /// store fills. Buylist and per-provider retail are captured only in granular.
 pub struct PriceEventProcessor {

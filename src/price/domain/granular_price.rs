@@ -7,7 +7,7 @@ use sqlx::FromRow;
 
 /// A single price point as ingested, with no averaging: one provider, one
 /// retail|buylist type, one finish, one condition, one day. Mirrors a
-/// `granular_price` row in the web DB (owned there; scry only writes it).
+/// `granular_price` row in the web DB (owned there; scry writes and prunes it).
 ///
 /// `condition` is "NM" by convention for sources with no grade (MTGJSON); the
 /// Card Kingdom direct feed (Tier B) supplies real conditions + `qty`.
