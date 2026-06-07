@@ -295,7 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manapool_captured_in_granular_cardmarket_ignored_neither_in_average() {
+    async fn granular_captures_manapool_excludes_cardmarket_average_uses_neither() {
         let json = r#"{
           "data": {
             "card-uuid-1": {

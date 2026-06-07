@@ -179,7 +179,7 @@ impl PriceService {
         valid_card_ids: &std::collections::HashSet<String>,
     ) -> Result<()> {
         // Historical pass: averaged prices -> price_history (unchanged), and the
-        // same multi-date granular rows backfill granular_price.
+        // same multi-date granular rows backfill granular_price_history.
         let mut history: Vec<Price> = Vec::new();
         let mut granular: Vec<GranularPrice> = Vec::new();
         for cp in card_prices {
