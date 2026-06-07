@@ -37,6 +37,15 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) on push to main:
 2. **tag** — Creates GitHub release from Cargo.toml version
 3. **build** — Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`
 
+### Deployment order (Scry + web)
+
+Scry writes tables that the **web app's migrations create** ([i-want-my-mtg](https://github.com/matthewdtowles/i-want-my-mtg)), and Scry's CI does **not** touch the production server - the binary only reaches it when the web app's deploy extracts it from `scry:latest`. So when a change spans both repos (e.g. Scry starts writing a new table):
+
+1. **Publish Scry first** (this CI). Safe - the server keeps running the old binary, which stays correct because changes here are additive.
+2. **Then deploy the web app.** It runs migrations (creates the table), then extracts the new binary - schema before binary, in one deploy.
+
+Never manually refresh the binary on the server (`docker cp` it out of the image) before the web migration has run, or the new binary will write to a table that does not exist yet.
+
 ### Integration Tests
 
 Integration tests are marked `#[ignore]` so `cargo test` skips them (they require a running PostgreSQL instance). To run locally:
