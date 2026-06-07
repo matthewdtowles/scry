@@ -24,7 +24,7 @@ cargo run -- cleanup -c           # Stream-cleanup individual cards based on fil
 cargo run -- health               # Basic health check
 cargo run -- health --detailed    # Detailed health check
 cargo run -- interactive          # Launch interactive menu (run multiple commands in one session)
-cargo run -- retention            # Apply tiered retention to price_history, set_price_history, portfolio_value_history
+cargo run -- retention            # Apply tiered retention to price_history, granular_price_history, set_price_history, portfolio_value_history
 cargo run -- truncate-history     # Truncate price_history (interactive confirm)
 ```
 
@@ -36,6 +36,15 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) on push to main:
 1. **test** — Runs `cargo test -- --include-ignored` (unit + integration)
 2. **tag** — Creates GitHub release from Cargo.toml version
 3. **build** — Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`
+
+### Deployment order (Scry + web)
+
+Scry writes tables that the **web app's migrations create** ([i-want-my-mtg](https://github.com/matthewdtowles/i-want-my-mtg)), and Scry's CI does **not** touch the production server - the binary only reaches it when the web app's deploy extracts it from `scry:latest`. So when a change spans both repos (e.g. Scry starts writing a new table):
+
+1. **Publish Scry first** (this CI). Safe - the server keeps running the old binary, which stays correct because changes here are additive.
+2. **Then deploy the web app.** It runs migrations (creates the table), then extracts the new binary - schema before binary, in one deploy.
+
+Never manually refresh the binary on the server (`docker cp` it out of the image) before the web migration has run, or the new binary will write to a table that does not exist yet.
 
 ### Integration Tests
 
@@ -108,7 +117,7 @@ src/
 
 ### Database
 
-Shares the same PostgreSQL database as the NestJS web app ([i-want-my-mtg](https://github.com/matthewdtowles/i-want-my-mtg)). Schema and migrations are managed in the web app repo. Core tables: `card`, `set`, `price`, `price_history`, `legality`, `set_price`.
+Shares the same PostgreSQL database as the NestJS web app ([i-want-my-mtg](https://github.com/matthewdtowles/i-want-my-mtg)). Schema and migrations are managed in the web app repo. Core tables: `card`, `set`, `price`, `price_history`, `legality`, `set_price`, `granular_price` (current per-vendor retail/buylist offer, one row per series) + `granular_price_history` (dated, retention-bounded).
 
 Uses SQLx with the `runtime-tokio-rustls` feature. The `ConnectionPool` struct wraps `PgPool` and provides helper methods for common query patterns (count, execute, fetch).
 

@@ -180,3 +180,5 @@ CI/CD via GitHub Actions (`.github/workflows/ci.yml`) on push to main:
 3. Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`
 
 The web app's deploy pipeline pulls the latest image and extracts the scry binary for cron job execution on the production server.
+
+**Deployment order with the web app:** Scry writes tables that the [web app's](https://github.com/matthewdtowles/i-want-my-mtg) migrations create, and Scry's CI does not deploy to the server - the web deploy extracts the binary from `scry:latest`. When a change spans both repos, publish Scry's image first, then deploy the web app (it migrates, then extracts the new binary, so the schema exists first). Publishing Scry first is safe; the server keeps running the old binary until the web deploy. Don't hand-refresh the binary on the server before the migration runs.

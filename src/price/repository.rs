@@ -1,5 +1,5 @@
 use crate::database::ConnectionPool;
-use crate::price::domain::Price;
+use crate::price::domain::{GranularPrice, Price};
 use anyhow::Result;
 use chrono::NaiveDate;
 use sqlx::QueryBuilder;
@@ -17,6 +17,8 @@ pub struct PriceRepository {
 impl PriceRepository {
     const PRICE_TABLE: &str = "price";
     const PRICE_HISTORY_TABLE: &str = "price_history";
+    const GRANULAR_PRICE_TABLE: &str = "granular_price";
+    const GRANULAR_PRICE_HISTORY_TABLE: &str = "granular_price_history";
 
     pub fn new(db: Arc<ConnectionPool>) -> Self {
         Self { db }
@@ -53,6 +55,75 @@ impl PriceRepository {
 
     pub async fn save_price_history(&self, prices: &[Price]) -> Result<i64> {
         self.save(prices, Self::PRICE_HISTORY_TABLE).await
+    }
+
+    /// Upsert the current per-vendor offer (one row per series, no date in the
+    /// key). The date guard keeps each series monotonic: a stale ingest can't
+    /// move a series backwards, and a vendor that doesn't quote today keeps its
+    /// last-known price. price is overwritten (last writer wins — MTGJSON is
+    /// ingested before any future CK-direct row).
+    pub async fn save_granular_prices(&self, prices: &[GranularPrice]) -> Result<i64> {
+        self.upsert_granular(
+            prices,
+            Self::GRANULAR_PRICE_TABLE,
+            " ON CONFLICT (card_id, provider, price_type, finish, condition) \
+              DO UPDATE SET price = EXCLUDED.price, date = EXCLUDED.date \
+              WHERE EXCLUDED.date >= granular_price.date",
+        )
+        .await
+    }
+
+    /// Upsert the dated history series (retention-bounded). Re-ingesting the same
+    /// day overwrites that day's price; distinct dates accumulate.
+    pub async fn save_granular_price_history(&self, prices: &[GranularPrice]) -> Result<i64> {
+        self.upsert_granular(
+            prices,
+            Self::GRANULAR_PRICE_HISTORY_TABLE,
+            " ON CONFLICT (card_id, provider, price_type, finish, condition, date) \
+              DO UPDATE SET price = EXCLUDED.price",
+        )
+        .await
+    }
+
+    /// Shared batch UPSERT for the granular tables. Both share the same columns
+    /// and row binding; callers supply the table and the `ON CONFLICT` clause.
+    async fn upsert_granular(
+        &self,
+        prices: &[GranularPrice],
+        table: &str,
+        conflict_clause: &str,
+    ) -> Result<i64> {
+        if prices.is_empty() {
+            return Ok(0);
+        }
+        // Chunk so a large batch can't exceed Postgres's 65535 bind-param limit
+        // (7 binds/row).
+        const CHUNK: usize = 4000;
+        let mut total = 0;
+        for chunk in prices.chunks(CHUNK) {
+            let mut query_builder = QueryBuilder::new(format!(
+                "INSERT INTO {} (card_id, provider, price_type, finish, condition, date, price) ",
+                table
+            ));
+            query_builder.push_values(chunk, |mut b, price| {
+                b.push_bind(&price.card_id)
+                    .push_bind(&price.provider)
+                    .push_bind(&price.price_type)
+                    .push_bind(&price.finish)
+                    .push_bind(&price.condition)
+                    .push_bind(&price.date)
+                    .push_bind(&price.price);
+            });
+            query_builder.push(conflict_clause);
+            match self.db.execute_query_builder(query_builder).await {
+                Ok(count) => total += count,
+                Err(e) => {
+                    error!("Database error: {:?}", e);
+                    return Err(e.into());
+                }
+            }
+        }
+        Ok(total)
     }
 
     pub async fn delete_all(&self) -> Result<i64> {
@@ -131,31 +202,51 @@ impl PriceRepository {
     }
 
     pub async fn apply_weekly_retention(&self) -> Result<i64> {
+        self.weekly_retention(Self::PRICE_HISTORY_TABLE).await
+    }
+
+    pub async fn apply_monthly_retention(&self) -> Result<i64> {
+        self.monthly_retention(Self::PRICE_HISTORY_TABLE).await
+    }
+
+    pub async fn apply_granular_weekly_retention(&self) -> Result<i64> {
+        self.weekly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE).await
+    }
+
+    pub async fn apply_granular_monthly_retention(&self) -> Result<i64> {
+        self.monthly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE)
+            .await
+    }
+
+    /// Weekly tier: in the 7-28 day window, keep only Mondays (DOW 1). Date-based
+    /// so it applies independently to every series in the table.
+    async fn weekly_retention(&self, table: &str) -> Result<i64> {
         self.db
-            .count(
+            .count(&format!(
                 "WITH deleted AS ( \
-                    DELETE FROM price_history \
+                    DELETE FROM {table} \
                     WHERE date >= CURRENT_DATE - INTERVAL '28 days' \
                       AND date < CURRENT_DATE - INTERVAL '7 days' \
                       AND EXTRACT(DOW FROM date) NOT IN (1) \
                     RETURNING 1 \
                 ) \
-                SELECT COUNT(*) FROM deleted",
-            )
+                SELECT COUNT(*) FROM deleted"
+            ))
             .await
     }
 
-    pub async fn apply_monthly_retention(&self) -> Result<i64> {
+    /// Monthly tier: beyond 28 days, keep only the 1st of each month.
+    async fn monthly_retention(&self, table: &str) -> Result<i64> {
         self.db
-            .count(
+            .count(&format!(
                 "WITH deleted AS ( \
-                    DELETE FROM price_history \
+                    DELETE FROM {table} \
                     WHERE date < CURRENT_DATE - INTERVAL '28 days' \
                       AND EXTRACT(DAY FROM date) != 1 \
                     RETURNING 1 \
                 ) \
-                SELECT COUNT(*) FROM deleted",
-            )
+                SELECT COUNT(*) FROM deleted"
+            ))
             .await
     }
 
@@ -167,32 +258,39 @@ impl PriceRepository {
         if prices.is_empty() {
             return Ok(0);
         }
-        let query = format!("INSERT INTO {} (card_id, foil, normal, date) ", table);
-        let mut query_builder = QueryBuilder::new(query);
-        query_builder.push_values(prices, |mut b, price| {
-            b.push_bind(&price.card_id)
-                .push_bind(&price.foil)
-                .push_bind(&price.normal)
-                .push_bind(&price.date);
-        });
-        query_builder.push(
-            " ON CONFLICT (card_id, date) DO UPDATE SET
-            foil = COALESCE(EXCLUDED.foil, ",
-        );
-        query_builder.push(table);
-        query_builder.push(
-            ".foil),
-            normal = COALESCE(EXCLUDED.normal, ",
-        );
-        query_builder.push(table);
-        query_builder.push(".normal)");
-        match self.db.execute_query_builder(query_builder).await {
-            Ok(count) => Ok(count),
-            Err(e) => {
-                error!("Database error: {:?}", e);
-                Err(e.into())
+        // Chunk so a large batch can't exceed Postgres's 65535 bind-param limit
+        // (4 binds/row).
+        const CHUNK: usize = 8000;
+        let mut total = 0;
+        for chunk in prices.chunks(CHUNK) {
+            let query = format!("INSERT INTO {} (card_id, foil, normal, date) ", table);
+            let mut query_builder = QueryBuilder::new(query);
+            query_builder.push_values(chunk, |mut b, price| {
+                b.push_bind(&price.card_id)
+                    .push_bind(&price.foil)
+                    .push_bind(&price.normal)
+                    .push_bind(&price.date);
+            });
+            query_builder.push(
+                " ON CONFLICT (card_id, date) DO UPDATE SET
+                foil = COALESCE(EXCLUDED.foil, ",
+            );
+            query_builder.push(table);
+            query_builder.push(
+                ".foil),
+                normal = COALESCE(EXCLUDED.normal, ",
+            );
+            query_builder.push(table);
+            query_builder.push(".normal)");
+            match self.db.execute_query_builder(query_builder).await {
+                Ok(count) => total += count,
+                Err(e) => {
+                    error!("Database error: {:?}", e);
+                    return Err(e.into());
+                }
             }
         }
+        Ok(total)
     }
 
     pub async fn update_price_change_weekly(&self) -> Result<i64> {

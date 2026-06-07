@@ -106,6 +106,31 @@ CREATE TABLE IF NOT EXISTS price_history (
     UNIQUE(card_id, date)
 );
 
+-- Granular price tables (web owns the real schema; this mirrors it for tests).
+-- Current: one row per series (no date in the PK) = the current per-vendor offer.
+CREATE TABLE IF NOT EXISTS granular_price (
+    card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
+    provider VARCHAR NOT NULL,
+    price_type VARCHAR NOT NULL,
+    finish VARCHAR NOT NULL,
+    condition VARCHAR NOT NULL DEFAULT 'NM',
+    date DATE NOT NULL,
+    price NUMERIC(10,2) NOT NULL,
+    PRIMARY KEY (card_id, provider, price_type, finish, condition)
+);
+
+-- History: dated series (date in the PK), retention-bounded.
+CREATE TABLE IF NOT EXISTS granular_price_history (
+    card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
+    provider VARCHAR NOT NULL,
+    price_type VARCHAR NOT NULL,
+    finish VARCHAR NOT NULL,
+    condition VARCHAR NOT NULL DEFAULT 'NM',
+    date DATE NOT NULL,
+    price NUMERIC(10,2) NOT NULL,
+    PRIMARY KEY (card_id, provider, price_type, finish, condition, date)
+);
+
 -- Set price table
 CREATE TABLE IF NOT EXISTS set_price (
     id SERIAL PRIMARY KEY,

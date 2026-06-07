@@ -455,6 +455,10 @@ ONE-TIME SETUP
         let result = self.price_service.apply_retention().await?;
         info!("Weekly period: deleted {} rows", result.weekly_deleted);
         info!("Monthly period: deleted {} rows", result.monthly_deleted);
+        info!(
+            "Granular price: weekly deleted {} rows, monthly deleted {} rows",
+            result.granular_weekly_deleted, result.granular_monthly_deleted
+        );
         info!("Total deleted: {}", result.total_deleted);
 
         info!("Starting set price history retention cleanup");
