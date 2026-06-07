@@ -204,7 +204,6 @@ impl HistoricalPriceEventProcessor {
             GranularPrice::DEFAULT_CONDITION.to_string(),
             date,
             price,
-            None,
         ) {
             self.current_granular.push(gp);
         }

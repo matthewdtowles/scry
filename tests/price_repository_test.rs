@@ -158,7 +158,7 @@ async fn test_fetch_prices_for_card_ids() {
     assert!(foil.is_some());
 }
 
-fn create_test_granular(card_id: &str, price: Decimal, qty: Option<i32>) -> GranularPrice {
+fn create_test_granular(card_id: &str, price: Decimal) -> GranularPrice {
     GranularPrice {
         card_id: card_id.to_string(),
         provider: "cardkingdom".to_string(),
@@ -167,20 +167,22 @@ fn create_test_granular(card_id: &str, price: Decimal, qty: Option<i32>) -> Gran
         condition: "NM".to_string(),
         date: NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
         price,
-        qty,
     }
 }
 
-async fn fetch_granular(db: &Arc<ConnectionPool>, card_id: &str) -> (Decimal, Option<i32>) {
-    let mut qb = QueryBuilder::new("SELECT price, qty FROM granular_price WHERE card_id = ");
+async fn fetch_granular(db: &Arc<ConnectionPool>, card_id: &str) -> Decimal {
+    let mut qb = QueryBuilder::new("SELECT price FROM granular_price WHERE card_id = ");
     qb.push_bind(card_id.to_string());
-    let rows: Vec<(Decimal, Option<i32>)> = db.fetch_all_query_builder(qb).await.unwrap();
-    rows.into_iter().next().expect("granular row should exist")
+    let rows: Vec<(Decimal,)> = db.fetch_all_query_builder(qb).await.unwrap();
+    rows.into_iter()
+        .next()
+        .expect("granular row should exist")
+        .0
 }
 
 #[tokio::test]
 #[ignore]
-async fn test_save_granular_prices_upsert_overwrites_price_preserves_qty() {
+async fn test_save_granular_prices_upsert_overwrites_price() {
     let db = common::setup_test_db().await;
     let set_repo = SetRepository::new(db.clone());
     let card_repo = CardRepository::new(db.clone());
@@ -195,33 +197,53 @@ async fn test_save_granular_prices_upsert_overwrites_price_preserves_qty() {
         .await
         .unwrap();
 
-    // MTGJSON-style insert: a buylist price, no qty.
     let n = price_repo
-        .save_granular_prices(&[create_test_granular("p10-c1", Decimal::new(350, 2), None)])
+        .save_granular_prices(&[create_test_granular("p10-c1", Decimal::new(350, 2))])
         .await
         .unwrap();
     assert_eq!(n, 1);
 
-    // CK-direct-style upsert on the same key: new price, real qty.
+    // Same series, same date: the current-table upsert overwrites the price.
     price_repo
-        .save_granular_prices(&[create_test_granular("p10-c1", Decimal::new(375, 2), Some(10))])
+        .save_granular_prices(&[create_test_granular("p10-c1", Decimal::new(375, 2))])
         .await
         .unwrap();
-    let (price, qty) = fetch_granular(&db, "p10-c1").await;
-    assert_eq!(price, Decimal::new(375, 2));
-    assert_eq!(qty, Some(10));
-
-    // A later qty-less upsert overwrites price but preserves qty via COALESCE.
-    price_repo
-        .save_granular_prices(&[create_test_granular("p10-c1", Decimal::new(360, 2), None)])
-        .await
-        .unwrap();
-    let (price, qty) = fetch_granular(&db, "p10-c1").await;
-    assert_eq!(price, Decimal::new(360, 2));
-    assert_eq!(qty, Some(10));
+    assert_eq!(fetch_granular(&db, "p10-c1").await, Decimal::new(375, 2));
 }
 
-fn granular_on(card_id: &str, date: NaiveDate) -> GranularPrice {
+#[tokio::test]
+#[ignore]
+async fn test_save_granular_prices_current_ignores_older_date() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+    let price_repo = PriceRepository::new(db.clone());
+
+    set_repo
+        .save_sets(&[common::create_test_set("p12")])
+        .await
+        .unwrap();
+    card_repo
+        .save_cards(&[common::create_test_card("p12-c1", "p12")])
+        .await
+        .unwrap();
+
+    let newer = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+    let older = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+
+    price_repo
+        .save_granular_prices(&[granular_at("p12-c1", newer, Decimal::new(500, 2))])
+        .await
+        .unwrap();
+    // The date guard rejects an older-dated row, so the current offer holds.
+    price_repo
+        .save_granular_prices(&[granular_at("p12-c1", older, Decimal::new(100, 2))])
+        .await
+        .unwrap();
+    assert_eq!(fetch_granular(&db, "p12-c1").await, Decimal::new(500, 2));
+}
+
+fn granular_at(card_id: &str, date: NaiveDate, price: Decimal) -> GranularPrice {
     GranularPrice {
         card_id: card_id.to_string(),
         provider: "cardkingdom".to_string(),
@@ -229,13 +251,16 @@ fn granular_on(card_id: &str, date: NaiveDate) -> GranularPrice {
         finish: "normal".to_string(),
         condition: "NM".to_string(),
         date,
-        price: Decimal::new(300, 2),
-        qty: None,
+        price,
     }
 }
 
+fn granular_on(card_id: &str, date: NaiveDate) -> GranularPrice {
+    granular_at(card_id, date, Decimal::new(300, 2))
+}
+
 async fn fetch_granular_dates(db: &Arc<ConnectionPool>, card_id: &str) -> Vec<NaiveDate> {
-    let mut qb = QueryBuilder::new("SELECT date FROM granular_price WHERE card_id = ");
+    let mut qb = QueryBuilder::new("SELECT date FROM granular_price_history WHERE card_id = ");
     qb.push_bind(card_id.to_string());
     qb.push(" ORDER BY date");
     let rows: Vec<(NaiveDate,)> = db.fetch_all_query_builder(qb).await.unwrap();
@@ -263,7 +288,7 @@ async fn test_granular_retention_keeps_first_of_month_and_recent() {
     let mid_month = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(); // old, not 1st -> delete
     let recent = chrono::Utc::now().date_naive(); // recent -> keep
     price_repo
-        .save_granular_prices(&[
+        .save_granular_price_history(&[
             granular_on("p11-c1", first_of_month),
             granular_on("p11-c1", mid_month),
             granular_on("p11-c1", recent),

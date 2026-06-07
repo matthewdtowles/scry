@@ -200,8 +200,8 @@ impl PriceService {
             debug!("Saved batch of {} prices to history table.", history_count);
         }
         if !granular.is_empty() {
-            let granular_count = self.repository.save_granular_prices(&granular).await?;
-            debug!("Saved batch of {} granular price rows.", granular_count);
+            let history_count = self.repository.save_granular_price_history(&granular).await?;
+            debug!("Saved batch of {} granular history rows.", history_count);
         }
         Ok(())
     }
@@ -236,8 +236,12 @@ impl PriceService {
             debug!("Saved batch of {} prices to history table.", history_count);
         }
         if !granular.is_empty() {
-            let granular_count = self.repository.save_granular_prices(&granular).await?;
-            debug!("Saved batch of {} granular price rows.", granular_count);
+            let current_count = self.repository.save_granular_prices(&granular).await?;
+            let history_count = self.repository.save_granular_price_history(&granular).await?;
+            debug!(
+                "Saved {} current granular rows, {} granular history rows.",
+                current_count, history_count
+            );
         }
         Ok(())
     }

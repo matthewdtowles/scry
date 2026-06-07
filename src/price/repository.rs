@@ -18,6 +18,7 @@ impl PriceRepository {
     const PRICE_TABLE: &str = "price";
     const PRICE_HISTORY_TABLE: &str = "price_history";
     const GRANULAR_PRICE_TABLE: &str = "granular_price";
+    const GRANULAR_PRICE_HISTORY_TABLE: &str = "granular_price_history";
 
     pub fn new(db: Arc<ConnectionPool>) -> Self {
         Self { db }
@@ -56,21 +57,53 @@ impl PriceRepository {
         self.save(prices, Self::PRICE_HISTORY_TABLE).await
     }
 
-    /// Upsert granular rows. price is overwritten (last writer wins — MTGJSON is
-    /// ingested before CK-direct, so CK-direct's authoritative row lands last);
-    /// qty is preserved when the new row has none (MTGJSON carries no qty).
+    /// Upsert the current per-vendor offer (one row per series, no date in the
+    /// key). The date guard keeps each series monotonic: a stale ingest can't
+    /// move a series backwards, and a vendor that doesn't quote today keeps its
+    /// last-known price. price is overwritten (last writer wins — MTGJSON is
+    /// ingested before any future CK-direct row).
     pub async fn save_granular_prices(&self, prices: &[GranularPrice]) -> Result<i64> {
+        self.upsert_granular(
+            prices,
+            Self::GRANULAR_PRICE_TABLE,
+            " ON CONFLICT (card_id, provider, price_type, finish, condition) \
+              DO UPDATE SET price = EXCLUDED.price, date = EXCLUDED.date \
+              WHERE EXCLUDED.date >= granular_price.date",
+        )
+        .await
+    }
+
+    /// Upsert the dated history series (retention-bounded). Re-ingesting the same
+    /// day overwrites that day's price; distinct dates accumulate.
+    pub async fn save_granular_price_history(&self, prices: &[GranularPrice]) -> Result<i64> {
+        self.upsert_granular(
+            prices,
+            Self::GRANULAR_PRICE_HISTORY_TABLE,
+            " ON CONFLICT (card_id, provider, price_type, finish, condition, date) \
+              DO UPDATE SET price = EXCLUDED.price",
+        )
+        .await
+    }
+
+    /// Shared batch UPSERT for the granular tables. Both share the same columns
+    /// and row binding; callers supply the table and the `ON CONFLICT` clause.
+    async fn upsert_granular(
+        &self,
+        prices: &[GranularPrice],
+        table: &str,
+        conflict_clause: &str,
+    ) -> Result<i64> {
         if prices.is_empty() {
             return Ok(0);
         }
         // Chunk so a large batch can't exceed Postgres's 65535 bind-param limit
-        // (8 binds/row).
+        // (7 binds/row).
         const CHUNK: usize = 4000;
         let mut total = 0;
         for chunk in prices.chunks(CHUNK) {
             let mut query_builder = QueryBuilder::new(format!(
-                "INSERT INTO {} (card_id, provider, price_type, finish, condition, date, price, qty) ",
-                Self::GRANULAR_PRICE_TABLE
+                "INSERT INTO {} (card_id, provider, price_type, finish, condition, date, price) ",
+                table
             ));
             query_builder.push_values(chunk, |mut b, price| {
                 b.push_bind(&price.card_id)
@@ -79,14 +112,9 @@ impl PriceRepository {
                     .push_bind(&price.finish)
                     .push_bind(&price.condition)
                     .push_bind(&price.date)
-                    .push_bind(&price.price)
-                    .push_bind(&price.qty);
+                    .push_bind(&price.price);
             });
-            query_builder.push(
-                " ON CONFLICT (card_id, provider, price_type, finish, condition, date) \
-                  DO UPDATE SET price = EXCLUDED.price, \
-                  qty = COALESCE(EXCLUDED.qty, granular_price.qty)",
-            );
+            query_builder.push(conflict_clause);
             match self.db.execute_query_builder(query_builder).await {
                 Ok(count) => total += count,
                 Err(e) => {
@@ -182,11 +210,12 @@ impl PriceRepository {
     }
 
     pub async fn apply_granular_weekly_retention(&self) -> Result<i64> {
-        self.weekly_retention(Self::GRANULAR_PRICE_TABLE).await
+        self.weekly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE).await
     }
 
     pub async fn apply_granular_monthly_retention(&self) -> Result<i64> {
-        self.monthly_retention(Self::GRANULAR_PRICE_TABLE).await
+        self.monthly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE)
+            .await
     }
 
     /// Weekly tier: in the 7-28 day window, keep only Mondays (DOW 1). Date-based

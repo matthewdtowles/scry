@@ -6,11 +6,14 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 /// A single price point as ingested, with no averaging: one provider, one
-/// retail|buylist type, one finish, one condition, one day. Mirrors a
-/// `granular_price` row in the web DB (owned there; scry writes and prunes it).
+/// retail|buylist type, one finish, one condition, one day. Mirrors a row in
+/// the web DB's `granular_price` (current per-vendor offer) and
+/// `granular_price_history` (dated series) — owned there; scry writes and
+/// prunes both.
 ///
-/// `condition` is "NM" by convention for sources with no grade (MTGJSON); the
-/// Card Kingdom direct feed (Tier B) supplies real conditions + `qty`.
+/// `condition` is "NM" by convention for sources with no grade (MTGJSON, the
+/// only Tier A source). Buy quantity and real conditions arrive with Tier B
+/// (Card Kingdom direct) and are modelled then, not carried here.
 #[derive(Clone, Debug, FromRow, Serialize, Deserialize, PartialEq)]
 pub struct GranularPrice {
     pub card_id: String,
@@ -20,7 +23,6 @@ pub struct GranularPrice {
     pub condition: String,
     pub date: NaiveDate,
     pub price: Decimal,
-    pub qty: Option<i32>,
 }
 
 impl GranularPrice {
@@ -34,15 +36,9 @@ impl GranularPrice {
         condition: String,
         date: NaiveDate,
         price: Decimal,
-        qty: Option<i32>,
     ) -> Result<Self> {
         if price < Decimal::ZERO {
             bail!("Granular price cannot be negative");
-        }
-        if let Some(q) = qty {
-            if q < 0 {
-                bail!("Granular price quantity cannot be negative");
-            }
         }
         Ok(Self {
             card_id,
@@ -52,7 +48,6 @@ impl GranularPrice {
             condition,
             date,
             price,
-            qty,
         })
     }
 }
@@ -77,7 +72,7 @@ mod tests {
         NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
     }
 
-    fn valid(price: Decimal, qty: Option<i32>) -> Result<GranularPrice> {
+    fn valid(price: Decimal) -> Result<GranularPrice> {
         GranularPrice::new(
             "card-123".to_string(),
             "cardkingdom".to_string(),
@@ -86,28 +81,22 @@ mod tests {
             GranularPrice::DEFAULT_CONDITION.to_string(),
             date(),
             price,
-            qty,
         )
     }
 
     #[test]
     fn test_new_valid() {
         // 3.50
-        assert!(valid(Decimal::new(350, 2), Some(12)).is_ok());
+        assert!(valid(Decimal::new(350, 2)).is_ok());
     }
 
     #[test]
     fn test_new_zero_price_ok() {
-        assert!(valid(Decimal::ZERO, None).is_ok());
+        assert!(valid(Decimal::ZERO).is_ok());
     }
 
     #[test]
     fn test_new_negative_price_fails() {
-        assert!(valid(Decimal::from(-1), None).is_err());
-    }
-
-    #[test]
-    fn test_new_negative_qty_fails() {
-        assert!(valid(Decimal::from(1), Some(-1)).is_err());
+        assert!(valid(Decimal::from(-1)).is_err());
     }
 }
