@@ -525,7 +525,7 @@ ONE-TIME SETUP
         }
 
         info!("Starting historical price backfill from AllPrices.json...");
-        self.price_service.ingest_all_historical().await?;
+        let granular_failures = self.price_service.ingest_all_historical().await?;
         info!("Historical price backfill complete.");
 
         if !skip_retention {
@@ -543,6 +543,14 @@ ONE-TIME SETUP
         info!("Starting set price history backfill from price_history...");
         self.handle_backfill_set_price_history().await?;
 
+        // price_history is fully backfilled above; surface any best-effort
+        // granular history failures last so the run still exits non-zero.
+        if granular_failures > 0 {
+            return Err(anyhow::anyhow!(
+                "{granular_failures} granular price-history write failure(s) during backfill; \
+                 price_history was backfilled — see ERROR log above"
+            ));
+        }
         Ok(())
     }
 
@@ -577,7 +585,7 @@ ONE-TIME SETUP
     async fn update_prices(&self) -> Result<()> {
         let total_prices_before = self.price_service.fetch_price_count().await?;
         let total_history_before = self.price_service.fetch_price_history_count().await?;
-        self.price_service.ingest_all_today().await?;
+        let granular_failures = self.price_service.ingest_all_today().await?;
         self.price_service.clean_up_prices().await?;
         let total_prices_after = self.price_service.fetch_price_count().await?;
         let total_history_after = self.price_service.fetch_price_history_count().await?;
@@ -590,6 +598,15 @@ ONE-TIME SETUP
             info!("Price table is up to date.");
         } else {
             warn!("Prices for today's date not yet available.");
+        }
+        // Averaged prices are fully refreshed and cleaned up above; surface any
+        // best-effort granular failures last so the run exits non-zero (alerting)
+        // without having held back the critical path.
+        if granular_failures > 0 {
+            return Err(anyhow::anyhow!(
+                "{granular_failures} granular price write failure(s) during today's ingest; \
+                 averaged price/price_history were updated — see ERROR log above"
+            ));
         }
         Ok(())
     }

@@ -7,8 +7,9 @@ use crate::{database::ConnectionPool, utils::http_client::HttpClient};
 use anyhow::Result;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 const BATCH_SIZE: usize = 500;
 
@@ -69,38 +70,51 @@ impl PriceService {
         self.repository.price_history_count().await
     }
 
-    pub async fn ingest_all_today(&self) -> Result<()> {
+    /// Ingest today's prices. Returns the number of best-effort granular write
+    /// failures (0 = clean). Granular (per-vendor) writes must not abort the
+    /// averaged price/price_history refresh (the critical path) or the rest of
+    /// the stream, so they are tallied rather than propagated; the caller decides
+    /// how to surface a non-zero count AFTER its own post-ingest steps run. A
+    /// hard failure (stream/network, or an averaged price/price_history write)
+    /// still returns Err and aborts.
+    pub async fn ingest_all_today(&self) -> Result<u64> {
         debug!("Start ingestion of all prices");
         let byte_stream = self.client.all_today_prices_stream().await?;
         debug!("Received byte stream for today's prices.");
         let valid_card_ids = self.repository.fetch_all_card_ids().await?;
 
         let event_processor = PriceEventProcessor::new(BATCH_SIZE);
+        let granular_failures = AtomicU64::new(0);
 
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         json_stream_parser
             .parse_stream(byte_stream, |batch| {
-                Box::pin(self.save_prices(batch, &valid_card_ids))
+                Box::pin(self.save_prices(batch, &valid_card_ids, &granular_failures))
             })
             .await?;
-        Ok(())
+
+        Ok(granular_failures.load(Ordering::Relaxed))
     }
 
-    pub async fn ingest_all_historical(&self) -> Result<()> {
+    /// Backfill historical prices. Returns the count of best-effort granular
+    /// history write failures (0 = clean); same policy as `ingest_all_today`.
+    pub async fn ingest_all_historical(&self) -> Result<u64> {
         debug!("Start ingestion of all historical prices");
         let byte_stream = self.client.all_prices_stream().await?;
         debug!("Received byte stream for historical prices.");
         let valid_card_ids = self.repository.fetch_all_card_ids().await?;
 
         let event_processor = HistoricalPriceEventProcessor::new(BATCH_SIZE);
+        let granular_failures = AtomicU64::new(0);
 
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         json_stream_parser
             .parse_stream(byte_stream, |batch| {
-                Box::pin(self.save_price_history_only(batch, &valid_card_ids))
+                Box::pin(self.save_price_history_only(batch, &valid_card_ids, &granular_failures))
             })
             .await?;
-        Ok(())
+
+        Ok(granular_failures.load(Ordering::Relaxed))
     }
 
     pub async fn delete_all(&self) -> Result<i64> {
@@ -177,6 +191,7 @@ impl PriceService {
         &self,
         card_prices: Vec<CardPrices>,
         valid_card_ids: &std::collections::HashSet<String>,
+        granular_failures: &AtomicU64,
     ) -> Result<()> {
         // Historical pass: averaged prices -> price_history (unchanged), and the
         // same multi-date granular rows backfill granular_price_history.
@@ -200,8 +215,15 @@ impl PriceService {
             debug!("Saved batch of {} prices to history table.", history_count);
         }
         if !granular.is_empty() {
-            let history_count = self.repository.save_granular_price_history(&granular).await?;
-            debug!("Saved batch of {} granular history rows.", history_count);
+            // Best-effort (see ingest_all_historical).
+            match self.repository.save_granular_price_history(&granular).await {
+                Ok(history_count) => {
+                    debug!("Saved batch of {} granular history rows.", history_count)
+                }
+                Err(e) => {
+                    Self::note_granular_failure(granular_failures, "granular_price_history", &e)
+                }
+            }
         }
         Ok(())
     }
@@ -210,6 +232,7 @@ impl PriceService {
         &self,
         card_prices: Vec<CardPrices>,
         valid_card_ids: &std::collections::HashSet<String>,
+        granular_failures: &AtomicU64,
     ) -> Result<()> {
         // Split the per-card bundle into derived averages (for the existing
         // price/price_history tables) and granular rows (for granular_price),
@@ -236,13 +259,33 @@ impl PriceService {
             debug!("Saved batch of {} prices to history table.", history_count);
         }
         if !granular.is_empty() {
-            let current_count = self.repository.save_granular_prices(&granular).await?;
-            let history_count = self.repository.save_granular_price_history(&granular).await?;
-            debug!(
-                "Saved {} current granular rows, {} granular history rows.",
-                current_count, history_count
-            );
+            // Best-effort and independent per table: a failure on the secondary
+            // per-vendor store must not stall the averaged price refresh above or
+            // the rest of the stream (see ingest_all_today).
+            match self.repository.save_granular_prices(&granular).await {
+                Ok(current_count) => debug!("Saved {} current granular rows.", current_count),
+                Err(e) => Self::note_granular_failure(granular_failures, "granular_price", &e),
+            }
+            match self.repository.save_granular_price_history(&granular).await {
+                Ok(history_count) => debug!("Saved {} granular history rows.", history_count),
+                Err(e) => {
+                    Self::note_granular_failure(granular_failures, "granular_price_history", &e)
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Record a best-effort granular write failure: log the first one at ERROR
+    /// with full detail, throttle the rest to debug (a structural failure repeats
+    /// every batch and would otherwise flood the log), and bump the counter the
+    /// caller checks once the stream completes.
+    fn note_granular_failure(counter: &AtomicU64, table: &str, err: &anyhow::Error) {
+        let prev = counter.fetch_add(1, Ordering::Relaxed);
+        if prev == 0 {
+            error!("Best-effort {table} write failed (price refresh continues): {err:?}");
+        } else {
+            debug!("Best-effort {table} write failed again (#{}): {err}", prev + 1);
+        }
     }
 }
