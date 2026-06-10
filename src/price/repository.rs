@@ -67,7 +67,8 @@ impl PriceRepository {
             prices,
             Self::GRANULAR_PRICE_TABLE,
             " ON CONFLICT (card_id, provider, price_type, finish, condition) \
-              DO UPDATE SET price = EXCLUDED.price, date = EXCLUDED.date \
+              DO UPDATE SET price = EXCLUDED.price, date = EXCLUDED.date, \
+              qty = EXCLUDED.qty \
               WHERE EXCLUDED.date >= granular_price.date",
         )
         .await
@@ -80,7 +81,7 @@ impl PriceRepository {
             prices,
             Self::GRANULAR_PRICE_HISTORY_TABLE,
             " ON CONFLICT (card_id, provider, price_type, finish, condition, date) \
-              DO UPDATE SET price = EXCLUDED.price",
+              DO UPDATE SET price = EXCLUDED.price, qty = EXCLUDED.qty",
         )
         .await
     }
@@ -97,12 +98,12 @@ impl PriceRepository {
             return Ok(0);
         }
         // Chunk so a large batch can't exceed Postgres's 65535 bind-param limit
-        // (7 binds/row).
+        // (8 binds/row).
         const CHUNK: usize = 4000;
         let mut total = 0;
         for chunk in prices.chunks(CHUNK) {
             let mut query_builder = QueryBuilder::new(format!(
-                "INSERT INTO {} (card_id, provider, price_type, finish, condition, date, price) ",
+                "INSERT INTO {} (card_id, provider, price_type, finish, condition, date, price, qty) ",
                 table
             ));
             query_builder.push_values(chunk, |mut b, price| {
@@ -112,7 +113,8 @@ impl PriceRepository {
                     .push_bind(&price.finish)
                     .push_bind(&price.condition)
                     .push_bind(&price.date)
-                    .push_bind(&price.price);
+                    .push_bind(&price.price)
+                    .push_bind(&price.qty);
             });
             query_builder.push(conflict_clause);
             match self.db.execute_query_builder(query_builder).await {
