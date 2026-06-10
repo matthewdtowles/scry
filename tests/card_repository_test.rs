@@ -137,3 +137,39 @@ async fn test_count_for_sets() {
     assert_eq!(c05_count, 2);
     assert_eq!(c06_count, 1);
 }
+
+#[tokio::test]
+#[ignore]
+async fn test_save_cards_persists_scryfall_id() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db);
+
+    set_repo
+        .save_sets(&[common::create_test_set("c07")])
+        .await
+        .unwrap();
+
+    let mut card = common::create_test_card("c07-1", "c07");
+    card.scryfall_id = Some("11111111-2222-4333-8444-555555555555".to_string());
+    card_repo.save_cards(&[card.clone()]).await.unwrap();
+
+    let fetched = card_repo
+        .fetch_ascii_cards_by_set_and_names("c07", &[card.name.clone()])
+        .await
+        .unwrap();
+    assert_eq!(fetched.len(), 1);
+    assert_eq!(
+        fetched[0].scryfall_id.as_deref(),
+        Some("11111111-2222-4333-8444-555555555555")
+    );
+
+    // A scryfall_id change alone must be detected by the upsert
+    card.scryfall_id = Some("11111111-2222-4333-8444-666666666666".to_string());
+    let saved = card_repo.save_cards(&[card.clone()]).await.unwrap();
+    assert_eq!(saved, 1);
+
+    // An identical re-save must be a no-op
+    let saved = card_repo.save_cards(&[card]).await.unwrap();
+    assert_eq!(saved, 0);
+}

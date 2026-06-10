@@ -22,6 +22,10 @@ pub struct Card {
     pub tcgplayer_product_id: Option<String>,
     pub tcgplayer_etched_product_id: Option<String>,
     pub rarity: CardRarity,
+    /// Scryfall's id for this printing. Required at ingest (the mapper fails
+    /// without it); `Option` because the DB column is nullable -- rows whose
+    /// backfill from img_src was skipped read as None.
+    pub scryfall_id: Option<String>,
     pub set_code: String,
     pub sort_number: String,
 
@@ -236,6 +240,7 @@ mod tests {
             tcgplayer_product_id: None,
             tcgplayer_etched_product_id: None,
             rarity: CardRarity::Rare,
+            scryfall_id: Some("ab12cd34-5678-90ef-abcd-ef1234567890".to_string()),
             set_code: "tst".to_string(),
             side: None,
             sort_number: "000123".to_string(),

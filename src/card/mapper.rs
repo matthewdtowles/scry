@@ -150,6 +150,7 @@ impl CardMapper {
             tcgplayer_product_id,
             tcgplayer_etched_product_id,
             rarity,
+            scryfall_id: Some(scryfall_id.to_string()),
             set_code,
             side,
             sort_number,
@@ -244,6 +245,11 @@ mod tests {
         assert_eq!(card.mana_cost, Some("{r}".to_string()));
         assert!(card.has_non_foil);
         assert!(!card.has_foil);
+        assert_eq!(
+            card.scryfall_id.as_deref(),
+            Some("ab12cd34-5678-90ef-abcd-ef1234567890")
+        );
+        assert_eq!(card.img_src, "a/b/ab12cd34-5678-90ef-abcd-ef1234567890.jpg");
     }
 
     #[test]

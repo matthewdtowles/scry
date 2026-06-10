@@ -72,8 +72,11 @@ CREATE TABLE IF NOT EXISTS card (
     set_code VARCHAR(10) NOT NULL REFERENCES "set"(code),
     sort_number VARCHAR(20) NOT NULL,
     "type" VARCHAR(255) NOT NULL,
-    layout VARCHAR(50) NOT NULL DEFAULT 'normal'
+    layout VARCHAR(50) NOT NULL DEFAULT 'normal',
+    scryfall_id VARCHAR(36)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_card_scryfall_id ON card (scryfall_id);
 
 -- Legality table
 CREATE TABLE IF NOT EXISTS legality (
@@ -116,6 +119,7 @@ CREATE TABLE IF NOT EXISTS granular_price (
     condition VARCHAR NOT NULL DEFAULT 'NM',
     date DATE NOT NULL,
     price NUMERIC(10,2) NOT NULL,
+    qty INTEGER,
     PRIMARY KEY (card_id, provider, price_type, finish, condition)
 );
 
@@ -128,6 +132,7 @@ CREATE TABLE IF NOT EXISTS granular_price_history (
     condition VARCHAR NOT NULL DEFAULT 'NM',
     date DATE NOT NULL,
     price NUMERIC(10,2) NOT NULL,
+    qty INTEGER,
     PRIMARY KEY (card_id, provider, price_type, finish, condition, date)
 );
 
