@@ -1,6 +1,8 @@
 [package]
 name = "scry"
-version = "5.12.1"
+# Placeholder — the real version is the latest git tag, computed by CI from
+# the PR title (.github/scripts/next-version.sh) and stamped at Docker build.
+version = "0.0.0-dev"
 edition = "2021"
 description = "MTG data ETL management tool"
 
