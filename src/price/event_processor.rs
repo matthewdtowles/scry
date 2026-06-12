@@ -266,21 +266,20 @@ mod tests {
         let cards = run(sample_json()).await;
         assert_eq!(cards.len(), 1);
         let g = &cards[0].granular;
-        // tcgplayer retail normal+foil, cardkingdom retail normal + buylist normal,
-        // cardsphere buylist normal = 5 rows
-        assert_eq!(g.len(), 5);
+        // tcgplayer retail normal+foil, cardkingdom retail normal + buylist normal
+        // = 4 rows. cardsphere is in the sample feed but is not a granular
+        // provider (ROADMAP 6.9: absent upstream), so its buylist row is dropped.
+        assert_eq!(g.len(), 4);
+        assert!(g.iter().all(|r| r.provider != "cardsphere"));
 
         let buylist: Vec<_> = g.iter().filter(|r| r.price_type == "buylist").collect();
-        assert_eq!(buylist.len(), 2);
+        assert_eq!(buylist.len(), 1);
         assert!(buylist
             .iter()
             .all(|r| r.condition == "NM" && r.finish == "normal"));
         assert!(buylist
             .iter()
             .any(|r| r.provider == "cardkingdom" && r.price == Decimal::new(350, 2)));
-        assert!(buylist
-            .iter()
-            .any(|r| r.provider == "cardsphere" && r.price == Decimal::new(325, 2)));
     }
 
     #[tokio::test]

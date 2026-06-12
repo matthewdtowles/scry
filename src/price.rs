@@ -12,9 +12,10 @@ pub use service::PriceService;
 /// byte-identical to the pre-granular behavior.
 pub(crate) const AVERAGE_PROVIDERS: &[&str] = &["tcgplayer", "cardkingdom", "cardsphere"];
 
-/// Providers captured as granular rows (retail + buylist). Superset of
-/// `AVERAGE_PROVIDERS` plus Mana Pool (USD). Cardmarket is intentionally
-/// excluded: it is EUR and `granular_price` has no currency column yet, so its
-/// prices can't be stored unambiguously — revisit when currency is modeled.
-pub(crate) const GRANULAR_PROVIDERS: &[&str] =
-    &["tcgplayer", "cardkingdom", "cardsphere", "manapool"];
+/// Providers captured as granular rows (retail + buylist), all USD: the ones
+/// with usable data (tcgplayer, cardkingdom) plus Mana Pool. Cardsphere is
+/// excluded even though it still feeds the average - it is absent from the
+/// MTGJSON feed (ROADMAP 6.9), so a granular row for it would never appear.
+/// Cardmarket is excluded as EUR: `granular_price` has no currency column yet,
+/// so its prices can't be stored unambiguously - revisit when currency is modeled.
+pub(crate) const GRANULAR_PROVIDERS: &[&str] = &["tcgplayer", "cardkingdom", "manapool"];
