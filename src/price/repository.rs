@@ -39,6 +39,17 @@ impl PriceRepository {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
+    /// scryfall_id -> card.id, for matching Card Kingdom's pricelist (keyed by
+    /// scryfall_id) to our MTGJSON-uuid cards.
+    pub async fn fetch_scryfall_card_id_map(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let query = "SELECT scryfall_id, id FROM card WHERE scryfall_id IS NOT NULL";
+        let query_builder = QueryBuilder::new(query);
+        let rows: Vec<(String, String)> = self.db.fetch_all_query_builder(query_builder).await?;
+        Ok(rows.into_iter().collect())
+    }
+
     pub async fn fetch_price_dates(&self) -> Result<Vec<NaiveDate>> {
         let query = format!(
             "SELECT DISTINCT(date) FROM {} ORDER BY date DESC",

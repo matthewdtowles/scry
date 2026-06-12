@@ -16,6 +16,7 @@ impl HttpClient {
     const SET_LIST_URL: &str = "SetList.json";
     const TODAY_PRICES_URL: &str = "AllPricesToday.json";
     const ALL_PRICES_URL: &str = "AllPrices.json";
+    const CK_PRICELIST_URL: &str = "https://api.cardkingdom.com/api/v2/pricelist";
 
     pub fn new() -> Self {
         Self {
@@ -45,6 +46,16 @@ impl HttpClient {
         let url = format!("{}{}", Self::BASE_INGESTION_URL, Self::ALL_PRICES_URL);
         info!("Stream all historical prices from: {}", url);
         self.fetch_json_bytes_stream(url.as_str()).await
+    }
+
+    pub async fn cardkingdom_pricelist_stream(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Bytes, reqwest::Error>>> {
+        info!(
+            "Stream Card Kingdom pricelist from: {}",
+            Self::CK_PRICELIST_URL
+        );
+        self.fetch_json_bytes_stream(Self::CK_PRICELIST_URL).await
     }
 
     pub async fn fetch_set_cards<T>(&self, set_code: &str) -> Result<T>

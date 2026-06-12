@@ -1,3 +1,4 @@
+use crate::price::cardkingdom::{granular_from_ck_products, CkPricelistEventProcessor, CkProduct};
 use crate::price::domain::{CardPrices, GranularPrice, Price};
 use crate::price::event_processor::PriceEventProcessor;
 use crate::price::historical_event_processor::HistoricalPriceEventProcessor;
@@ -5,9 +6,10 @@ use crate::price::repository::PriceRepository;
 use crate::utils::JsonStreamParser;
 use crate::{database::ConnectionPool, utils::http_client::HttpClient};
 use anyhow::Result;
+use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -19,6 +21,12 @@ pub struct RetentionResult {
     pub granular_weekly_deleted: i64,
     pub granular_monthly_deleted: i64,
     pub total_deleted: i64,
+}
+
+#[derive(Debug, Default)]
+pub struct CkDirectStats {
+    pub rows_saved: i64,
+    pub unmatched: u64,
 }
 
 pub struct PriceService {
@@ -115,6 +123,57 @@ impl PriceService {
             .await?;
 
         Ok(granular_failures.load(Ordering::Relaxed))
+    }
+
+    /// Ingest Card Kingdom's direct pricelist: live buylist offers
+    /// (`price_buy` + `qty_buying`), matched to cards via `scryfall_id`. Must
+    /// run AFTER the MTGJSON ingest so the CK-direct row overwrites the
+    /// indicative MTGJSON CK row on the shared granular key (last-writer-wins
+    /// upsert). Hard failures return Err; the caller treats the whole
+    /// CK-direct pass as best-effort enrichment.
+    pub async fn ingest_cardkingdom_direct(&self) -> Result<CkDirectStats> {
+        debug!("Start Card Kingdom direct pricelist ingestion");
+        let scryfall_map = self.repository.fetch_scryfall_card_id_map().await?;
+        if scryfall_map.is_empty() {
+            warn!("No cards carry a scryfall_id; skipping CK-direct ingest.");
+            return Ok(CkDirectStats::default());
+        }
+        let byte_stream = self.client.cardkingdom_pricelist_stream().await?;
+        let today = chrono::Utc::now().date_naive();
+        let rows_saved = AtomicI64::new(0);
+        let unmatched = AtomicU64::new(0);
+
+        let event_processor = CkPricelistEventProcessor::new(BATCH_SIZE);
+        let mut json_stream_parser = JsonStreamParser::new(event_processor);
+        json_stream_parser
+            .parse_stream(byte_stream, |batch| {
+                Box::pin(self.save_ck_batch(batch, &scryfall_map, today, &rows_saved, &unmatched))
+            })
+            .await?;
+
+        Ok(CkDirectStats {
+            rows_saved: rows_saved.load(Ordering::Relaxed),
+            unmatched: unmatched.load(Ordering::Relaxed),
+        })
+    }
+
+    async fn save_ck_batch(
+        &self,
+        products: Vec<CkProduct>,
+        scryfall_map: &HashMap<String, String>,
+        date: NaiveDate,
+        rows_saved: &AtomicI64,
+        unmatched: &AtomicU64,
+    ) -> Result<()> {
+        let (rows, batch_unmatched) = granular_from_ck_products(products, scryfall_map, date);
+        unmatched.fetch_add(batch_unmatched, Ordering::Relaxed);
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let saved = self.repository.save_granular_prices(&rows).await?;
+        self.repository.save_granular_price_history(&rows).await?;
+        rows_saved.fetch_add(saved, Ordering::Relaxed);
+        Ok(())
     }
 
     pub async fn delete_all(&self) -> Result<i64> {
