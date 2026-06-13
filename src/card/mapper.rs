@@ -67,7 +67,6 @@ impl CardMapper {
             .and_then(|i| i.get("scryfallId"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing scryfallId"))?;
-        let img_src = Card::build_scryfall_image_path(scryfall_id)?;
 
         let identifiers = card_data.get("identifiers");
         let tcgplayer_product_id = identifiers
@@ -133,7 +132,6 @@ impl CardMapper {
             has_foil,
             has_non_foil,
             id,
-            img_src,
             in_main,
             is_alternative,
             is_online_only,
@@ -249,7 +247,6 @@ mod tests {
             card.scryfall_id.as_deref(),
             Some("ab12cd34-5678-90ef-abcd-ef1234567890")
         );
-        assert_eq!(card.img_src, "a/b/ab12cd34-5678-90ef-abcd-ef1234567890.jpg");
     }
 
     #[test]

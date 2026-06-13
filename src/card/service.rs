@@ -389,7 +389,6 @@ mod tests {
             has_foil: true,
             has_non_foil: true,
             id: id.to_string(),
-            img_src: "a/b/test.jpg".to_string(),
             in_main: true,
             is_alternative: false,
             is_reserved: false,
