@@ -267,8 +267,8 @@ mod tests {
         assert_eq!(cards.len(), 1);
         let g = &cards[0].granular;
         // tcgplayer retail normal+foil, cardkingdom retail normal + buylist normal
-        // = 4 rows. cardsphere is in the sample feed but is not a granular
-        // provider (ROADMAP 6.9: absent upstream), so its buylist row is dropped.
+        // = 4 rows. cardsphere is in the sample feed but is not a tracked provider
+        // (ROADMAP 6.9: absent upstream, dropped), so its buylist row is dropped.
         assert_eq!(g.len(), 4);
         assert!(g.iter().all(|r| r.provider != "cardsphere"));
 
