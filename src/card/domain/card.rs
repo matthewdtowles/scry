@@ -1,5 +1,4 @@
 use super::{CardRarity, Legality};
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
@@ -10,7 +9,6 @@ pub struct Card {
     pub has_foil: bool,
     pub has_non_foil: bool,
     pub id: String,
-    pub img_src: String,
     pub in_main: bool,
     pub is_alternative: bool,
     pub is_reserved: bool,
@@ -188,18 +186,6 @@ impl Card {
         format!("{}{}", prefix, s)
     }
 
-    /// Build Scryfall image path from Scryfall UUID
-    ///
-    /// Encodes Scryfall's directory structure: `{first}/{second}/{uuid}.jpg`
-    pub fn build_scryfall_image_path(scryfall_id: &str) -> Result<String> {
-        if scryfall_id.len() < 2 {
-            return Err(anyhow::anyhow!("ScryfallId too short"));
-        }
-        let first = scryfall_id.chars().next().unwrap();
-        let second = scryfall_id.chars().nth(1).unwrap();
-        Ok(format!("{}/{}/{}.jpg", first, second, scryfall_id))
-    }
-
     fn sort_prefix(number: &str, in_main: bool) -> String {
         let mut prefix = String::new();
         if !in_main {
@@ -223,7 +209,6 @@ mod tests {
             has_foil: true,
             has_non_foil: true,
             id: "test-id".to_string(),
-            img_src: "a/b/test.jpg".to_string(),
             in_main: true,
             is_alternative: false,
             is_reserved: false,
@@ -328,29 +313,5 @@ mod tests {
         assert_eq!(Card::compute_sort_number("232†", true), "~000232†");
         assert_eq!(Card::compute_sort_number("2-3", true), "2-0003");
         assert_eq!(Card::compute_sort_number("232†", false), "~~000232†");
-    }
-
-    #[test]
-    fn test_build_scryfall_image_path_valid() {
-        let result = Card::build_scryfall_image_path("abcdef12-3456-7890-abcd-ef1234567890");
-        assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap(),
-            "a/b/abcdef12-3456-7890-abcd-ef1234567890.jpg"
-        );
-    }
-
-    #[test]
-    fn test_build_scryfall_image_path_two_chars() {
-        let result = Card::build_scryfall_image_path("ab");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "a/b/ab.jpg");
-    }
-
-    #[test]
-    fn test_build_scryfall_image_path_one_char_fails() {
-        let result = Card::build_scryfall_image_path("a");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "ScryfallId too short");
     }
 }

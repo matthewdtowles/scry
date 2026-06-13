@@ -56,7 +56,6 @@ pub fn create_test_card(id: &str, set_code: &str) -> Card {
         has_foil: true,
         has_non_foil: true,
         id: id.to_string(),
-        img_src: format!("a/b/{}.jpg", id),
         in_main: true,
         is_alternative: false,
         is_reserved: false,

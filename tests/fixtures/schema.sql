@@ -58,7 +58,10 @@ CREATE TABLE IF NOT EXISTS card (
     flavor_name VARCHAR(255),
     has_foil BOOLEAN NOT NULL DEFAULT false,
     has_non_foil BOOLEAN NOT NULL DEFAULT false,
-    img_src VARCHAR(255) NOT NULL,
+    -- nullable: scry no longer writes img_src (the web derives it from
+    -- scryfall_id). Mirrors prod after migration 037; the column is dropped
+    -- entirely once that migration is everywhere.
+    img_src VARCHAR(255),
     in_main BOOLEAN NOT NULL DEFAULT true,
     is_alternative BOOLEAN NOT NULL DEFAULT false,
     is_reserved BOOLEAN NOT NULL DEFAULT false,
