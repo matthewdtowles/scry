@@ -12,8 +12,13 @@ use sqlx::FromRow;
 /// prunes both.
 ///
 /// `condition` is "NM" by convention for sources with no grade (MTGJSON, the
-/// only Tier A source). Buy quantity and real conditions arrive with Tier B
-/// (Card Kingdom direct) and are modelled then, not carried here.
+/// only Tier A source).
+///
+/// `qty` is the vendor's live buy quantity (Tier B, Card Kingdom direct);
+/// `None` for sources that don't carry one (MTGJSON). Upserts write it
+/// last-writer-wins (`qty = EXCLUDED.qty`), so it reads NULL ("unknown")
+/// unless the most recent writer provided it -- a stale quantity is worse
+/// than none for actionable offers.
 #[derive(Clone, Debug, FromRow, Serialize, Deserialize, PartialEq)]
 pub struct GranularPrice {
     pub card_id: String,
@@ -23,6 +28,7 @@ pub struct GranularPrice {
     pub condition: String,
     pub date: NaiveDate,
     pub price: Decimal,
+    pub qty: Option<i32>,
 }
 
 impl GranularPrice {
@@ -48,6 +54,7 @@ impl GranularPrice {
             condition,
             date,
             price,
+            qty: None,
         })
     }
 }

@@ -167,6 +167,7 @@ fn create_test_granular(card_id: &str, price: Decimal) -> GranularPrice {
         condition: "NM".to_string(),
         date: NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
         price,
+        qty: None,
     }
 }
 
@@ -211,6 +212,50 @@ async fn test_save_granular_prices_upsert_overwrites_price() {
     assert_eq!(fetch_granular(&db, "p10-c1").await, Decimal::new(375, 2));
 }
 
+async fn fetch_granular_qty(db: &Arc<ConnectionPool>, card_id: &str) -> Option<i32> {
+    let mut qb = QueryBuilder::new("SELECT qty FROM granular_price WHERE card_id = ");
+    qb.push_bind(card_id.to_string());
+    let rows: Vec<(Option<i32>,)> = db.fetch_all_query_builder(qb).await.unwrap();
+    rows.into_iter()
+        .next()
+        .expect("granular row should exist")
+        .0
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_save_granular_prices_qty_last_writer_wins() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+    let price_repo = PriceRepository::new(db.clone());
+
+    set_repo
+        .save_sets(&[common::create_test_set("p13")])
+        .await
+        .unwrap();
+    card_repo
+        .save_cards(&[common::create_test_card("p13-c1", "p13")])
+        .await
+        .unwrap();
+
+    // CK-direct row carries a live buy quantity.
+    let mut with_qty = create_test_granular("p13-c1", Decimal::new(350, 2));
+    with_qty.qty = Some(16);
+    price_repo.save_granular_prices(&[with_qty]).await.unwrap();
+    assert_eq!(fetch_granular_qty(&db, "p13-c1").await, Some(16));
+
+    // A later write without qty (e.g. MTGJSON) nulls it out -- last writer
+    // wins; a stale quantity must not survive under a fresher price.
+    let without_qty = create_test_granular("p13-c1", Decimal::new(375, 2));
+    price_repo
+        .save_granular_prices(&[without_qty])
+        .await
+        .unwrap();
+    assert_eq!(fetch_granular_qty(&db, "p13-c1").await, None);
+    assert_eq!(fetch_granular(&db, "p13-c1").await, Decimal::new(375, 2));
+}
+
 #[tokio::test]
 #[ignore]
 async fn test_save_granular_prices_current_ignores_older_date() {
@@ -252,6 +297,7 @@ fn granular_at(card_id: &str, date: NaiveDate, price: Decimal) -> GranularPrice 
         condition: "NM".to_string(),
         date,
         price,
+        qty: None,
     }
 }
 
@@ -308,4 +354,26 @@ async fn test_granular_retention_keeps_first_of_month_and_recent() {
     assert!(dates.contains(&first_of_month));
     assert!(dates.contains(&recent));
     assert!(!dates.contains(&mid_month));
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_fetch_scryfall_card_id_map() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+    let price_repo = PriceRepository::new(db.clone());
+
+    set_repo
+        .save_sets(&[common::create_test_set("p14")])
+        .await
+        .unwrap();
+    card_repo
+        .save_cards(&[common::create_test_card("p14-c1", "p14")])
+        .await
+        .unwrap();
+
+    let map = price_repo.fetch_scryfall_card_id_map().await.unwrap();
+    // create_test_card sets scryfall_id = "scryfall-{id}"
+    assert_eq!(map.get("scryfall-p14-c1").map(String::as_str), Some("p14-c1"));
 }

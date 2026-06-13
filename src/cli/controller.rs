@@ -46,7 +46,11 @@ impl CliController {
                 set_cards,
                 sealed,
                 reset,
+                buylist,
             } => {
+                if buylist {
+                    return self.update_ck_buylist().await;
+                }
                 self.run_full_ingest_pipeline(sets, cards, prices, set_cards, sealed, reset)
                     .await
             }
@@ -582,10 +586,40 @@ ONE-TIME SETUP
         Ok(())
     }
 
+    /// Standalone CK-direct buylist refresh (`ingest -b`): re-run the live
+    /// buylist enrichment without re-ingesting MTGJSON prices. Unlike the
+    /// in-pipeline call (best-effort), failing IS the command's whole purpose,
+    /// so errors propagate -> non-zero exit.
+    async fn update_ck_buylist(&self) -> Result<()> {
+        let stats = self.price_service.ingest_cardkingdom_direct().await?;
+        info!(
+            "CK-direct buylist: {} rows saved, {} offers unmatched.",
+            stats.rows_saved, stats.unmatched
+        );
+        Ok(())
+    }
+
     async fn update_prices(&self) -> Result<()> {
         let total_prices_before = self.price_service.fetch_price_count().await?;
         let total_history_before = self.price_service.fetch_price_history_count().await?;
         let granular_failures = self.price_service.ingest_all_today().await?;
+        // CK-direct buylist enrichment (live offers + buy qty) runs AFTER the
+        // MTGJSON ingest so it overwrites the indicative CK rows. Best-effort:
+        // a failure here must never block the averaged price refresh -- it is
+        // logged and surfaced via a non-zero exit at the end of this fn.
+        let ck_error = match self.price_service.ingest_cardkingdom_direct().await {
+            Ok(stats) => {
+                info!(
+                    "CK-direct buylist: {} rows saved, {} offers unmatched.",
+                    stats.rows_saved, stats.unmatched
+                );
+                None
+            }
+            Err(e) => {
+                error!("CK-direct buylist ingest failed (price refresh unaffected): {e:?}");
+                Some(e)
+            }
+        };
         self.price_service.clean_up_prices().await?;
         let total_prices_after = self.price_service.fetch_price_count().await?;
         let total_history_after = self.price_service.fetch_price_history_count().await?;
@@ -600,12 +634,17 @@ ONE-TIME SETUP
             warn!("Prices for today's date not yet available.");
         }
         // Averaged prices are fully refreshed and cleaned up above; surface any
-        // best-effort granular failures last so the run exits non-zero (alerting)
-        // without having held back the critical path.
+        // best-effort granular/CK-direct failures last so the run exits non-zero
+        // (alerting) without having held back the critical path.
         if granular_failures > 0 {
             return Err(anyhow::anyhow!(
                 "{granular_failures} granular price write failure(s) during today's ingest; \
                  averaged price/price_history were updated — see ERROR log above"
+            ));
+        }
+        if let Some(e) = ck_error {
+            return Err(anyhow::anyhow!(
+                "CK-direct buylist ingest failed; averaged price/price_history were updated: {e}"
             ));
         }
         Ok(())

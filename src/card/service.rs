@@ -406,6 +406,7 @@ mod tests {
             tcgplayer_product_id: None,
             tcgplayer_etched_product_id: None,
             rarity: CardRarity::Rare,
+            scryfall_id: Some(format!("scryfall-{}", id)),
             set_code: "tst".to_string(),
             side: None,
             sort_number: "000001".to_string(),

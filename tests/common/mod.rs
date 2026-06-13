@@ -77,6 +77,7 @@ pub fn create_test_card(id: &str, set_code: &str) -> Card {
         tcgplayer_product_id: None,
         tcgplayer_etched_product_id: None,
         rarity: CardRarity::Rare,
+        scryfall_id: Some(format!("scryfall-{}", id)),
         set_code: set_code.to_string(),
         side: None,
         sort_number: "000001".to_string(),

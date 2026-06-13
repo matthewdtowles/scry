@@ -34,8 +34,11 @@ Set `SCRY_LOG` env var for log verbosity (default: `scry=info`). Reads `DATABASE
 
 GitHub Actions workflow (`.github/workflows/ci.yml`) on push to main:
 1. **test** — Runs `cargo test -- --include-ignored` (unit + integration)
-2. **tag** — Creates GitHub release from Cargo.toml version
-3. **build** — Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`
+2. **version** — Computes the next semver from git tags + the squash-merged PR title (`.github/scripts/next-version.sh`): `feat:` → minor, `!` → major, anything else → patch
+3. **tag** — Creates GitHub release for the computed version
+4. **build** — Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`, stamping the version into Cargo.toml via the `APP_VERSION` build arg
+
+Git tags are the source of truth for the version; Cargo.toml stays at its `0.0.0-dev` placeholder. Use squash merge so the PR title becomes the commit subject on main.
 
 ### Deployment order (Scry + web)
 

@@ -33,6 +33,13 @@ pub enum Commands {
         sealed: bool,
         #[arg(short, long, help = "Reset all data prior to ingestion.")]
         reset: bool,
+        #[arg(
+            short = 'b',
+            long,
+            help = "Ingest Card Kingdom direct buylist only (live offers + buy qty); skips everything else.",
+            conflicts_with_all = ["sets", "cards", "prices", "set_cards", "sealed", "reset"]
+        )]
+        buylist: bool,
     },
 
     /// Prune unwanted ingested data
