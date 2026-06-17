@@ -392,6 +392,7 @@ mod tests {
             in_main: true,
             is_alternative: false,
             is_reserved: false,
+            colors: Some(vec!["U".to_string()]),
             is_online_only: false,
             is_oversized: false,
             language: "English".to_string(),

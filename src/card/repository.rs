@@ -130,7 +130,7 @@ impl CardRepository {
                 in_main, is_alternative, is_reserved, mana_cost, name,
                 number, oracle_text, tcgplayer_product_id,
                 tcgplayer_etched_product_id, rarity, set_code,
-                sort_number, type, layout, scryfall_id
+                sort_number, type, layout, scryfall_id, colors
             )",
         );
         query_builder.push_values(cards, |mut b, card| {
@@ -153,7 +153,8 @@ impl CardRepository {
                 .push_bind(&card.sort_number)
                 .push_bind(&card.type_line)
                 .push_bind(&card.layout)
-                .push_bind(&card.scryfall_id);
+                .push_bind(&card.scryfall_id)
+                .push_bind(&card.colors);
         });
         query_builder.push(
             " ON CONFLICT (id) DO UPDATE SET
@@ -175,7 +176,8 @@ impl CardRepository {
             sort_number = EXCLUDED.sort_number,
             type = EXCLUDED.type,
             layout = EXCLUDED.layout,
-            scryfall_id = EXCLUDED.scryfall_id
+            scryfall_id = EXCLUDED.scryfall_id,
+            colors = EXCLUDED.colors
         WHERE
             card.artist IS DISTINCT FROM EXCLUDED.artist OR
             card.flavor_name IS DISTINCT FROM EXCLUDED.flavor_name OR
@@ -195,7 +197,8 @@ impl CardRepository {
             card.sort_number IS DISTINCT FROM EXCLUDED.sort_number OR
             card.type IS DISTINCT FROM EXCLUDED.type OR
             card.layout IS DISTINCT FROM EXCLUDED.layout OR
-            card.scryfall_id IS DISTINCT FROM EXCLUDED.scryfall_id",
+            card.scryfall_id IS DISTINCT FROM EXCLUDED.scryfall_id OR
+            card.colors IS DISTINCT FROM EXCLUDED.colors",
         );
         match self.db.execute_query_builder(query_builder).await {
             Ok(rows_affected) => Ok(rows_affected),
