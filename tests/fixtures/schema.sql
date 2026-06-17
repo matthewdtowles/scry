@@ -76,7 +76,10 @@ CREATE TABLE IF NOT EXISTS card (
     sort_number VARCHAR(20) NOT NULL,
     "type" VARCHAR(255) NOT NULL,
     layout VARCHAR(50) NOT NULL DEFAULT 'normal',
-    scryfall_id VARCHAR(36)
+    scryfall_id VARCHAR(36),
+    -- nullable: rows not yet re-ingested read as NULL. Mirrors the prod
+    -- column added by the web app migration.
+    colors TEXT[]
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_card_scryfall_id ON card (scryfall_id);

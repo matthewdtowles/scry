@@ -62,6 +62,12 @@ impl CardMapper {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let colors = card_data.get("colorIdentity").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|c| c.as_str().map(String::from))
+                .collect::<Vec<String>>()
+        });
+
         let scryfall_id = card_data
             .get("identifiers")
             .and_then(|i| i.get("scryfallId"))
@@ -137,6 +143,7 @@ impl CardMapper {
             is_online_only,
             is_oversized,
             is_reserved,
+            colors,
             language,
             layout,
             legalities,
@@ -215,6 +222,7 @@ mod tests {
             "type": "Instant",
             "rarity": "common",
             "manaCost": "{R}",
+            "colorIdentity": ["R"],
             "text": "Lightning Bolt deals 3 damage to any target.",
             "artist": "Christopher Rush",
             "isAlternative": false,
@@ -247,6 +255,31 @@ mod tests {
             card.scryfall_id.as_deref(),
             Some("ab12cd34-5678-90ef-abcd-ef1234567890")
         );
+        assert_eq!(card.colors, Some(vec!["R".to_string()]));
+    }
+
+    #[test]
+    fn test_map_json_color_identity() {
+        let mut json = create_valid_card_json();
+        json["colorIdentity"] = json!(["W", "U"]);
+        let card = CardMapper::map_json_to_card(&json, "expansion").unwrap();
+        assert_eq!(card.colors, Some(vec!["W".to_string(), "U".to_string()]));
+    }
+
+    #[test]
+    fn test_map_json_color_identity_empty_is_colorless() {
+        let mut json = create_valid_card_json();
+        json["colorIdentity"] = json!([]);
+        let card = CardMapper::map_json_to_card(&json, "expansion").unwrap();
+        assert_eq!(card.colors, Some(Vec::<String>::new()));
+    }
+
+    #[test]
+    fn test_map_json_color_identity_absent_is_none() {
+        let mut json = create_valid_card_json();
+        json.as_object_mut().unwrap().remove("colorIdentity");
+        let card = CardMapper::map_json_to_card(&json, "expansion").unwrap();
+        assert_eq!(card.colors, None);
     }
 
     #[test]

@@ -12,6 +12,10 @@ pub struct Card {
     pub in_main: bool,
     pub is_alternative: bool,
     pub is_reserved: bool,
+    /// Colors the card is associated with, from MTGJSON `colorIdentity`
+    /// (e.g. `["W","U"]`; empty for colorless). `Option` because the DB column
+    /// is nullable -- rows not yet re-ingested read as None.
+    pub colors: Option<Vec<String>>,
     pub layout: String,
     pub mana_cost: Option<String>,
     pub name: String,
@@ -212,6 +216,7 @@ mod tests {
             in_main: true,
             is_alternative: false,
             is_reserved: false,
+            colors: Some(vec!["U".to_string()]),
             is_online_only: false,
             is_oversized: false,
             language: "English".to_string(),
