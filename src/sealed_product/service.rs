@@ -155,7 +155,11 @@ mod tests {
 
     #[test]
     fn retain_valid_sets_keeps_all_when_every_set_is_valid() {
-        let batch = vec![product("a", "woe"), product("b", "woe"), product("c", "blb")];
+        let batch = vec![
+            product("a", "woe"),
+            product("b", "woe"),
+            product("c", "blb"),
+        ];
         let valid = set_of(&["woe", "blb"]);
         let kept = retain_valid_sets(batch, &valid);
         assert_eq!(kept.len(), 3);

@@ -13,24 +13,14 @@ const NON_MAIN_SET_TYPES: &[&str] = &["masters"];
 /// Set types NOT in this list (commander, duel_deck, from_the_vault, etc.)
 /// have cards that never appear in default boosters - so missing
 /// `boosterTypes` correctly means "not in main" and the fallback is skipped.
-const BOOSTER_BEARING_SET_TYPES: &[&str] = &[
-    "expansion",
-    "core",
-    "draft_innovation",
-    "masters",
-    "funny",
-];
+const BOOSTER_BEARING_SET_TYPES: &[&str] =
+    &["expansion", "core", "draft_innovation", "masters", "funny"];
 
 /// Frame effects that indicate a variant or special-treatment printing
 /// (extended art, showcase, full art, inverted, etched). Cards with any
 /// of these are excluded from the main set numbering.
-const SPECIAL_FRAME_EFFECTS: &[&str] = &[
-    "extendedart",
-    "showcase",
-    "fullart",
-    "inverted",
-    "etched",
-];
+const SPECIAL_FRAME_EFFECTS: &[&str] =
+    &["extendedart", "showcase", "fullart", "inverted", "etched"];
 
 /// Border colors that count as "main set" appearance. Borderless / silver /
 /// gold borders mark special treatments and are excluded.
@@ -280,7 +270,10 @@ mod tests {
             "number": "1",
             "borderColor": "black"
         });
-        assert!(!MainSetClassifier::is_main_set_card(&card, "from_the_vault"));
+        assert!(!MainSetClassifier::is_main_set_card(
+            &card,
+            "from_the_vault"
+        ));
     }
 
     #[test]

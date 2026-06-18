@@ -54,10 +54,7 @@ impl CardRepository {
         Ok(rows)
     }
 
-    pub async fn fetch_in_main_cards_for_set_types(
-        &self,
-        set_types: &[&str],
-    ) -> Result<Vec<Card>> {
+    pub async fn fetch_in_main_cards_for_set_types(&self, set_types: &[&str]) -> Result<Vec<Card>> {
         if set_types.is_empty() {
             return Ok(Vec::new());
         }
@@ -74,10 +71,7 @@ impl CardRepository {
         );
         qb.push(") ORDER BY c.set_code, c.sort_number");
         let rows: Vec<Card> = self.db.fetch_all_query_builder(qb).await?;
-        debug!(
-            "Found {} in_main cards for non-main set types.",
-            rows.len()
-        );
+        debug!("Found {} in_main cards for non-main set types.", rows.len());
         Ok(rows)
     }
 

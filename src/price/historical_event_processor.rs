@@ -231,10 +231,12 @@ mod tests {
 
         loop {
             let event = match parser.next_event() {
-                Ok(Some(actson::JsonEvent::NeedMoreInput)) => match parser.feeder.fill_buf().await {
-                    Ok(()) => continue,
-                    Err(_) => break,
-                },
+                Ok(Some(actson::JsonEvent::NeedMoreInput)) => {
+                    match parser.feeder.fill_buf().await {
+                        Ok(()) => continue,
+                        Err(_) => break,
+                    }
+                }
                 Ok(Some(event)) => event,
                 Ok(None) => {
                     all_cards.extend(processor.take_batch());
@@ -347,10 +349,12 @@ mod tests {
 
         loop {
             let event = match parser.next_event() {
-                Ok(Some(actson::JsonEvent::NeedMoreInput)) => match parser.feeder.fill_buf().await {
-                    Ok(()) => continue,
-                    Err(_) => break,
-                },
+                Ok(Some(actson::JsonEvent::NeedMoreInput)) => {
+                    match parser.feeder.fill_buf().await {
+                        Ok(()) => continue,
+                        Err(_) => break,
+                    }
+                }
                 Ok(Some(event)) => event,
                 Ok(None) => {
                     let remaining = processor.take_batch();
@@ -388,7 +392,10 @@ mod tests {
         }"#;
 
         let cards = parse_json(json).await;
-        assert!(cards.is_empty(), "Unknown provider yields no averages or granular");
+        assert!(
+            cards.is_empty(),
+            "Unknown provider yields no averages or granular"
+        );
     }
 
     #[tokio::test]
@@ -436,7 +443,9 @@ mod tests {
         // 2 retail + 2 buylist rows across two dates
         assert_eq!(g.len(), 4);
         assert_eq!(g.iter().filter(|r| r.price_type == "buylist").count(), 2);
-        assert!(g.iter().all(|r| r.condition == "NM" && r.provider == "cardkingdom"));
+        assert!(g
+            .iter()
+            .all(|r| r.condition == "NM" && r.provider == "cardkingdom"));
         // averages (retail only) = one per date
         assert_eq!(cards[0].averages.len(), 2);
     }

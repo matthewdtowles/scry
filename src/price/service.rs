@@ -148,7 +148,10 @@ impl PriceService {
                 ))
             })
             .await?;
-        info!("Finished ingesting historical prices for {} cards.", cards_seen);
+        info!(
+            "Finished ingesting historical prices for {} cards.",
+            cards_seen
+        );
         timings.log_summary("ingest_all_historical");
 
         Ok(granular_failures.load(Ordering::Relaxed))
@@ -269,10 +272,16 @@ impl PriceService {
         info!("Monthly period: deleted {} rows", monthly_deleted);
 
         let granular_weekly_deleted = self.repository.apply_granular_weekly_retention().await?;
-        info!("Granular weekly period: deleted {} rows", granular_weekly_deleted);
+        info!(
+            "Granular weekly period: deleted {} rows",
+            granular_weekly_deleted
+        );
 
         let granular_monthly_deleted = self.repository.apply_granular_monthly_retention().await?;
-        info!("Granular monthly period: deleted {} rows", granular_monthly_deleted);
+        info!(
+            "Granular monthly period: deleted {} rows",
+            granular_monthly_deleted
+        );
 
         let total_deleted =
             weekly_deleted + monthly_deleted + granular_weekly_deleted + granular_monthly_deleted;
@@ -318,8 +327,11 @@ impl PriceService {
         }
 
         if !history.is_empty() {
-            let history_count =
-                timed(&timings.price_history, self.repository.save_price_history(&history)).await?;
+            let history_count = timed(
+                &timings.price_history,
+                self.repository.save_price_history(&history),
+            )
+            .await?;
             debug!("Saved batch of {} prices to history table.", history_count);
         }
         if !granular.is_empty() {
@@ -367,19 +379,24 @@ impl PriceService {
         }
 
         if !averages.is_empty() {
-            let saved_count =
-                timed(&timings.price, self.repository.save_prices(&averages)).await?;
+            let saved_count = timed(&timings.price, self.repository.save_prices(&averages)).await?;
             debug!("Saved batch of {} prices to price table.", saved_count);
-            let history_count =
-                timed(&timings.price_history, self.repository.save_price_history(&averages)).await?;
+            let history_count = timed(
+                &timings.price_history,
+                self.repository.save_price_history(&averages),
+            )
+            .await?;
             debug!("Saved batch of {} prices to history table.", history_count);
         }
         if !granular.is_empty() {
             // Best-effort and independent per table: a failure on the secondary
             // per-vendor store must not stall the averaged price refresh above or
             // the rest of the stream (see ingest_all_today).
-            match timed(&timings.granular_price, self.repository.save_granular_prices(&granular))
-                .await
+            match timed(
+                &timings.granular_price,
+                self.repository.save_granular_prices(&granular),
+            )
+            .await
             {
                 Ok(current_count) => debug!("Saved {} current granular rows.", current_count),
                 Err(e) => Self::note_granular_failure(granular_failures, "granular_price", &e),
@@ -408,7 +425,10 @@ impl PriceService {
         if prev == 0 {
             error!("Best-effort {table} write failed (price refresh continues): {err:?}");
         } else {
-            debug!("Best-effort {table} write failed again (#{}): {err}", prev + 1);
+            debug!(
+                "Best-effort {table} write failed again (#{}): {err}",
+                prev + 1
+            );
         }
     }
 }

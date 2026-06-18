@@ -375,5 +375,8 @@ async fn test_fetch_scryfall_card_id_map() {
 
     let map = price_repo.fetch_scryfall_card_id_map().await.unwrap();
     // create_test_card sets scryfall_id = "scryfall-{id}"
-    assert_eq!(map.get("scryfall-p14-c1").map(String::as_str), Some("p14-c1"));
+    assert_eq!(
+        map.get("scryfall-p14-c1").map(String::as_str),
+        Some("p14-c1")
+    );
 }

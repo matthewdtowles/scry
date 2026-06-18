@@ -39,8 +39,7 @@ impl PortfolioService {
             .collect();
 
         let total_costs = self.repository.calculate_holding_costs().await?;
-        let cost_map: HashMap<i32, rust_decimal::Decimal> =
-            total_costs.into_iter().collect();
+        let cost_map: HashMap<i32, rust_decimal::Decimal> = total_costs.into_iter().collect();
 
         for snapshot in &mut snapshots {
             if let Some(cost) = cost_map.get(&snapshot.user_id) {
@@ -127,5 +126,4 @@ impl PortfolioService {
         let monthly = self.repository.apply_monthly_retention().await?;
         Ok((weekly, monthly))
     }
-
 }

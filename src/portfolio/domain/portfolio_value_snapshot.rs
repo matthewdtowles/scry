@@ -18,7 +18,7 @@ mod tests {
     fn create_test_snapshot() -> PortfolioValueSnapshot {
         PortfolioValueSnapshot {
             user_id: 1,
-            total_value: Decimal::new(10050, 2), // 100.50
+            total_value: Decimal::new(10050, 2),     // 100.50
             total_cost: Some(Decimal::new(8000, 2)), // 80.00
             total_cards: 25,
             date: NaiveDate::from_ymd_opt(2025, 6, 1).unwrap(),
@@ -32,10 +32,7 @@ mod tests {
         assert_eq!(snapshot.total_value, Decimal::new(10050, 2));
         assert_eq!(snapshot.total_cost, Some(Decimal::new(8000, 2)));
         assert_eq!(snapshot.total_cards, 25);
-        assert_eq!(
-            snapshot.date,
-            NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
-        );
+        assert_eq!(snapshot.date, NaiveDate::from_ymd_opt(2025, 6, 1).unwrap());
     }
 
     #[test]

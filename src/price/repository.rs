@@ -223,7 +223,8 @@ impl PriceRepository {
     }
 
     pub async fn apply_granular_weekly_retention(&self) -> Result<i64> {
-        self.weekly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE).await
+        self.weekly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE)
+            .await
     }
 
     pub async fn apply_granular_monthly_retention(&self) -> Result<i64> {
