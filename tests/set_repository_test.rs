@@ -212,9 +212,7 @@ async fn test_update_is_main_non_expansion_types_excluded() {
     repo.update_is_main().await.unwrap();
 
     let main_count = db
-        .count(
-            "SELECT COUNT(*) FROM \"set\" WHERE code LIKE 'nm0%' AND is_main = true",
-        )
+        .count("SELECT COUNT(*) FROM \"set\" WHERE code LIKE 'nm0%' AND is_main = true")
         .await
         .unwrap();
     assert_eq!(
@@ -377,10 +375,7 @@ async fn test_update_parent_codes_resolves_grandchild_chains() {
         .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'pc11' AND parent_code = 'pc10'")
         .await
         .unwrap();
-    assert_eq!(
-        child_points_to_root, 1,
-        "pc11 should point to root pc10"
-    );
+    assert_eq!(child_points_to_root, 1, "pc11 should point to root pc10");
 
     // Grandchild pc12 should point to root pc10, not intermediate pc11
     let grandchild_points_to_root = db
@@ -433,18 +428,12 @@ async fn test_update_parent_codes_time_spiral_fixup() {
         .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'tsb' AND parent_code = 'tsp'")
         .await
         .unwrap();
-    assert_eq!(
-        tsb_points_to_tsp, 1,
-        "tsb should point to tsp"
-    );
+    assert_eq!(tsb_points_to_tsp, 1, "tsb should point to tsp");
 
     // tsb should be in the Time Spiral block after fixup
     let tsb_in_block = db
         .count("SELECT COUNT(*) FROM \"set\" WHERE code = 'tsb' AND block = 'Time Spiral'")
         .await
         .unwrap();
-    assert_eq!(
-        tsb_in_block, 1,
-        "tsb should be in the Time Spiral block"
-    );
+    assert_eq!(tsb_in_block, 1, "tsb should be in the Time Spiral block");
 }

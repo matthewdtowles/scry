@@ -16,10 +16,7 @@ impl SealedProductRepository {
     }
 
     pub async fn count(&self) -> Result<i64> {
-        let count = self
-            .db
-            .count("SELECT COUNT(*) FROM sealed_product")
-            .await?;
+        let count = self.db.count("SELECT COUNT(*) FROM sealed_product").await?;
         Ok(count)
     }
 

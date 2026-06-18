@@ -453,9 +453,6 @@ mod tests {
         let result = CardService::merge_and_filter_cards(vec![card_a, card_b]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "split-a");
-        assert_eq!(
-            result[0].mana_cost,
-            Some("{1}{R} // {2}{G}".to_string())
-        );
+        assert_eq!(result[0].mana_cost, Some("{1}{R} // {2}{G}".to_string()));
     }
 }

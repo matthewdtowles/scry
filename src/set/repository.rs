@@ -335,10 +335,7 @@ impl SetRepository {
         );
         let cycles_broken = self.db.execute_query_builder(qb_break_cycles).await?;
         if cycles_broken > 0 {
-            warn!(
-                "Broke {} circular parent_code reference(s)",
-                cycles_broken
-            );
+            warn!("Broke {} circular parent_code reference(s)", cycles_broken);
         }
 
         // Step 3: For each block, find the canonical parent (earliest

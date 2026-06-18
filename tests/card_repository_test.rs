@@ -126,10 +126,7 @@ async fn test_count_for_sets() {
     let mut card3 = common::create_test_card("c06-1", "c06");
     card3.number = "1".to_string();
 
-    card_repo
-        .save_cards(&[card1, card2, card3])
-        .await
-        .unwrap();
+    card_repo.save_cards(&[card1, card2, card3]).await.unwrap();
 
     let counts = card_repo.count_for_sets(false).await.unwrap();
     let c05_count = counts.iter().find(|(code, _)| code == "c05").unwrap().1;

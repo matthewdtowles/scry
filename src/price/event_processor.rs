@@ -286,7 +286,10 @@ mod tests {
     async fn derived_average_is_retail_only_unchanged() {
         let cards = run(sample_json()).await;
         assert_eq!(cards[0].averages.len(), 1);
-        let avg = cards[0].averages.first().expect("expected an average price");
+        let avg = cards[0]
+            .averages
+            .first()
+            .expect("expected an average price");
         // normal retail = avg(5.00, 5.50) = 5.25; foil retail = 10.00
         assert_eq!(avg.normal, Some(Decimal::new(525, 2)));
         assert_eq!(avg.foil, Some(Decimal::from(10)));
@@ -309,7 +312,9 @@ mod tests {
         let cards = run(json).await;
         let g = &cards[0].granular;
         // manapool captured, cardmarket not
-        assert!(g.iter().any(|r| r.provider == "manapool" && r.price == Decimal::from(6)));
+        assert!(g
+            .iter()
+            .any(|r| r.provider == "manapool" && r.price == Decimal::from(6)));
         assert!(g.iter().all(|r| r.provider != "cardmarket"));
         // average uses only AVERAGE_PROVIDERS (tcgplayer here) = 4.00, not manapool/cardmarket
         let avg = cards[0].averages.first().expect("expected an average");

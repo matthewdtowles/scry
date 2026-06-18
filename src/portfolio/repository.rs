@@ -231,8 +231,14 @@ impl PortfolioRepository {
         }
 
         // Delete existing rows for all users that appear in the new data
-        let user_ids: Vec<i32> = rows.iter().map(|r| r.user_id).collect::<std::collections::HashSet<_>>().into_iter().collect();
-        let mut delete_qb = QueryBuilder::new("DELETE FROM portfolio_card_performance WHERE user_id IN (");
+        let user_ids: Vec<i32> = rows
+            .iter()
+            .map(|r| r.user_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let mut delete_qb =
+            QueryBuilder::new("DELETE FROM portfolio_card_performance WHERE user_id IN (");
         let mut separated = delete_qb.separated(", ");
         for uid in &user_ids {
             separated.push_bind(*uid);

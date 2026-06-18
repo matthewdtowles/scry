@@ -1,11 +1,9 @@
 use crate::{
-    cli::Commands,
-    portfolio::service::PortfolioService,
-    price::PriceService,
+    cli::Commands, portfolio::service::PortfolioService, price::PriceService,
     sealed_product::service::SealedProductService,
 };
 use anyhow::Result;
-use dialoguer::{Confirm, Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Confirm, Select};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 

@@ -1,6 +1,4 @@
-use crate::card::domain::{
-    Card, CardRarity, Format, Legality, LegalityStatus, MainSetClassifier,
-};
+use crate::card::domain::{Card, CardRarity, Format, Legality, LegalityStatus, MainSetClassifier};
 use crate::utils::json;
 use anyhow::Result;
 use serde_json::Value;
@@ -62,11 +60,14 @@ impl CardMapper {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let colors = card_data.get("colorIdentity").and_then(|v| v.as_array()).map(|arr| {
-            arr.iter()
-                .filter_map(|c| c.as_str().map(String::from))
-                .collect::<Vec<String>>()
-        });
+        let colors = card_data
+            .get("colorIdentity")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| c.as_str().map(String::from))
+                    .collect::<Vec<String>>()
+            });
 
         let scryfall_id = card_data
             .get("identifiers")

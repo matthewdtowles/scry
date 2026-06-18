@@ -1,2 +1,2 @@
-pub mod service;
 pub(crate) mod models;
+pub mod service;

@@ -365,8 +365,7 @@ mod tests {
             price_buy: Some(Decimal::new(350, 2)),
             qty_buying: Some(2),
         };
-        let (rows, unmatched) =
-            granular_from_ck_products(vec![cheaper, better], &map(), date());
+        let (rows, unmatched) = granular_from_ck_products(vec![cheaper, better], &map(), date());
         assert_eq!(unmatched, 0);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].price, Decimal::new(350, 2));

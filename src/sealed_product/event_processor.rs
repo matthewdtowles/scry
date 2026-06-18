@@ -213,10 +213,7 @@ impl SealedProductEventProcessor {
             }
             _ => {
                 // Skip non-sealedProduct fields at set level
-                if !self.in_sealed_array
-                    && self.json_depth >= 3
-                    && field_name != "sealedProduct"
-                {
+                if !self.in_sealed_array && self.json_depth >= 3 && field_name != "sealedProduct" {
                     self.is_skipping_value = true;
                     self.skip_depth = self.json_depth;
                 }
@@ -287,11 +284,7 @@ impl SealedProductEventProcessor {
         Ok(0)
     }
 
-    fn parse_sealed_product(
-        &self,
-        json: &str,
-        set_code: &str,
-    ) -> Result<Option<SealedProduct>> {
+    fn parse_sealed_product(&self, json: &str, set_code: &str) -> Result<Option<SealedProduct>> {
         let value: serde_json::Value = serde_json::from_str(json)?;
         SealedProductMapper::map_single_item(&value, set_code)
     }

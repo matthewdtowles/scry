@@ -45,8 +45,14 @@ impl SealedProductMapper {
         let name = json::extract_string(item, "name")?;
         let category = json::extract_optional_string(item, "category");
         let subtype = json::extract_optional_string(item, "subtype");
-        let card_count = item.get("cardCount").and_then(|v| v.as_i64()).map(|v| v as i32);
-        let product_size = item.get("productSize").and_then(|v| v.as_i64()).map(|v| v as i32);
+        let card_count = item
+            .get("cardCount")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+        let product_size = item
+            .get("productSize")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
         let release_date = json::extract_optional_date(item, "releaseDate");
 
         let tcgplayer_product_id = item
@@ -55,9 +61,7 @@ impl SealedProductMapper {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let contents_summary = item
-            .get("contents")
-            .map(|c| Self::flatten_contents(c));
+        let contents_summary = item.get("contents").map(|c| Self::flatten_contents(c));
 
         Ok(SealedProduct {
             uuid,
@@ -85,7 +89,10 @@ impl SealedProductMapper {
         if let Some(sealed) = contents.get("sealed").and_then(|v| v.as_array()) {
             for item in sealed {
                 let count = item.get("count").and_then(|v| v.as_i64()).unwrap_or(1);
-                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown");
                 if count > 1 {
                     parts.push(format!("{}x {}", count, name));
                 } else {
@@ -117,7 +124,10 @@ impl SealedProductMapper {
         if let Some(cards) = contents.get("card").and_then(|v| v.as_array()) {
             for item in cards {
                 let count = item.get("count").and_then(|v| v.as_i64()).unwrap_or(1);
-                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown Card");
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown Card");
                 let foil = item.get("foil").and_then(|v| v.as_bool()).unwrap_or(false);
                 let display = if foil {
                     format!("{} (Foil)", name)
@@ -135,7 +145,10 @@ impl SealedProductMapper {
         // deck - pre-constructed decks
         if let Some(decks) = contents.get("deck").and_then(|v| v.as_array()) {
             for item in decks {
-                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown Deck");
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown Deck");
                 parts.push(name.to_string());
             }
         }
@@ -144,7 +157,10 @@ impl SealedProductMapper {
         if let Some(others) = contents.get("other").and_then(|v| v.as_array()) {
             for item in others {
                 let count = item.get("count").and_then(|v| v.as_i64()).unwrap_or(1);
-                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown");
                 if count > 1 {
                     parts.push(format!("{}x {}", count, name));
                 } else {
@@ -182,7 +198,8 @@ mod tests {
             }
         });
 
-        let products = SealedProductMapper::map_mtg_json_to_sealed_products(&set_data, "BLB").unwrap();
+        let products =
+            SealedProductMapper::map_mtg_json_to_sealed_products(&set_data, "BLB").unwrap();
         assert_eq!(products.len(), 1);
         let p = &products[0];
         assert_eq!(p.uuid, "abc-123");
@@ -193,7 +210,10 @@ mod tests {
         assert_eq!(p.card_count, Some(540));
         assert_eq!(p.product_size, Some(36));
         assert_eq!(p.tcgplayer_product_id.as_deref(), Some("541185"));
-        assert_eq!(p.contents_summary.as_deref(), Some("36x Draft Booster Pack"));
+        assert_eq!(
+            p.contents_summary.as_deref(),
+            Some("36x Draft Booster Pack")
+        );
     }
 
     #[test]
@@ -207,7 +227,8 @@ mod tests {
                 ]
             }
         });
-        let products = SealedProductMapper::map_mtg_json_to_sealed_products(&set_data, "BLB").unwrap();
+        let products =
+            SealedProductMapper::map_mtg_json_to_sealed_products(&set_data, "BLB").unwrap();
         assert_eq!(products.len(), 1);
         assert_eq!(products[0].name, "Draft Booster Box");
     }
@@ -233,13 +254,17 @@ mod tests {
             "sealed": [{ "count": 1, "name": "Commander Masters Collector Booster Sample Pack" }]
         });
         let result = SealedProductMapper::flatten_contents(&contents);
-        assert_eq!(result, "Commander Masters Collector Booster Sample Pack, Eldrazi Unbound");
+        assert_eq!(
+            result,
+            "Commander Masters Collector Booster Sample Pack, Eldrazi Unbound"
+        );
     }
 
     #[test]
     fn test_no_sealed_product_field() {
         let set_data = json!({ "data": {} });
-        let products = SealedProductMapper::map_mtg_json_to_sealed_products(&set_data, "BLB").unwrap();
+        let products =
+            SealedProductMapper::map_mtg_json_to_sealed_products(&set_data, "BLB").unwrap();
         assert!(products.is_empty());
     }
 }
