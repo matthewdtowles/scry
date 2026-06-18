@@ -4,6 +4,7 @@ pub mod service;
 mod cardkingdom;
 mod event_processor;
 mod historical_event_processor;
+mod write_timings;
 
 pub use service::PriceService;
 
