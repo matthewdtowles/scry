@@ -74,7 +74,7 @@ impl PriceRepository {
     /// last-known price. price is overwritten (last writer wins — MTGJSON is
     /// ingested before any future CK-direct row).
     pub async fn save_granular_prices(&self, prices: &[GranularPrice]) -> Result<i64> {
-        self.upsert_granular(
+        self.write_granular_chunked(
             prices,
             Self::GRANULAR_PRICE_TABLE,
             " ON CONFLICT (card_id, provider, price_type, finish, condition) \
@@ -86,9 +86,12 @@ impl PriceRepository {
     }
 
     /// Upsert the dated history series (retention-bounded). Re-ingesting the same
-    /// day overwrites that day's price; distinct dates accumulate.
+    /// day overwrites that day's price; distinct dates accumulate. Used by
+    /// CK-direct, which *overwrites* the indicative MTGJSON row for today, and by
+    /// the historical backfill; the daily MTGJSON pass clears the date and uses
+    /// `insert_granular_price_history` (plain INSERT) instead.
     pub async fn save_granular_price_history(&self, prices: &[GranularPrice]) -> Result<i64> {
-        self.upsert_granular(
+        self.write_granular_chunked(
             prices,
             Self::GRANULAR_PRICE_HISTORY_TABLE,
             " ON CONFLICT (card_id, provider, price_type, finish, condition, date) \
@@ -97,9 +100,32 @@ impl PriceRepository {
         .await
     }
 
-    /// Shared batch UPSERT for the granular tables. Both share the same columns
-    /// and row binding; callers supply the table and the `ON CONFLICT` clause.
-    async fn upsert_granular(
+    /// Plain INSERT into the dated history series (no `ON CONFLICT`). The daily
+    /// ingest clears the date first (see `delete_granular_price_history_for_date`)
+    /// so today's rows never pre-exist - the upsert's conflict handling was pure
+    /// overhead there (~24x slower than a plain insert at prod scale, measured in
+    /// scry#25). Re-ingesting a day that was *not* cleared first raises a
+    /// duplicate-key error.
+    pub async fn insert_granular_price_history(&self, prices: &[GranularPrice]) -> Result<i64> {
+        self.write_granular_chunked(prices, Self::GRANULAR_PRICE_HISTORY_TABLE, "")
+            .await
+    }
+
+    /// Delete one day's rows from `granular_price_history`, so the daily plain
+    /// INSERT can reload that day idempotently on a same-day re-run.
+    pub async fn delete_granular_price_history_for_date(&self, date: NaiveDate) -> Result<i64> {
+        let mut qb = QueryBuilder::new(format!(
+            "DELETE FROM {} WHERE date = ",
+            Self::GRANULAR_PRICE_HISTORY_TABLE
+        ));
+        qb.push_bind(date);
+        self.db.execute_query_builder(qb).await
+    }
+
+    /// Shared chunked batch write for the granular tables. Both share the same
+    /// columns and row binding; callers supply the table and a trailing clause -
+    /// an `ON CONFLICT ...` upsert, or `""` for a plain INSERT.
+    async fn write_granular_chunked(
         &self,
         prices: &[GranularPrice],
         table: &str,

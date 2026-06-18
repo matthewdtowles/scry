@@ -380,3 +380,90 @@ async fn test_fetch_scryfall_card_id_map() {
         Some("p14-c1")
     );
 }
+
+async fn fetch_granular_history_prices(
+    db: &Arc<ConnectionPool>,
+    card_id: &str,
+    date: NaiveDate,
+) -> Vec<Decimal> {
+    let mut qb = QueryBuilder::new("SELECT price FROM granular_price_history WHERE card_id = ");
+    qb.push_bind(card_id.to_string());
+    qb.push(" AND date = ");
+    qb.push_bind(date);
+    qb.push(" ORDER BY price");
+    let rows: Vec<(Decimal,)> = db.fetch_all_query_builder(qb).await.unwrap();
+    rows.into_iter().map(|(p,)| p).collect()
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_granular_history_clear_then_plain_insert_is_idempotent() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+    let price_repo = PriceRepository::new(db.clone());
+
+    set_repo
+        .save_sets(&[common::create_test_set("p21")])
+        .await
+        .unwrap();
+    card_repo
+        .save_cards(&[common::create_test_card("p21-c1", "p21")])
+        .await
+        .unwrap();
+
+    // Recent, test-unique dates: sibling retention tests delete globally but only
+    // touch rows older than 7 days, and no other test uses these exact dates - so
+    // this test stays isolated despite the shared DB and the date-scoped delete.
+    let today = chrono::Utc::now().date_naive();
+    let date = today - chrono::Duration::days(3);
+    let prior = today - chrono::Duration::days(4);
+
+    // A prior day's row that the date-scoped clear must not touch.
+    price_repo
+        .insert_granular_price_history(&[granular_at("p21-c1", prior, Decimal::new(300, 2))])
+        .await
+        .unwrap();
+
+    // First run: clear today (nothing there yet) then plain INSERT.
+    assert_eq!(
+        price_repo
+            .delete_granular_price_history_for_date(date)
+            .await
+            .unwrap(),
+        0
+    );
+    let n = price_repo
+        .insert_granular_price_history(&[granular_at("p21-c1", date, Decimal::new(350, 2))])
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(
+        fetch_granular_history_prices(&db, "p21-c1", date).await,
+        vec![Decimal::new(350, 2)]
+    );
+
+    // Same-day re-run: clear (removes today's row) then plain INSERT a new value.
+    assert_eq!(
+        price_repo
+            .delete_granular_price_history_for_date(date)
+            .await
+            .unwrap(),
+        1
+    );
+    price_repo
+        .insert_granular_price_history(&[granular_at("p21-c1", date, Decimal::new(375, 2))])
+        .await
+        .unwrap();
+
+    // Idempotent: exactly one row for today, newest value wins.
+    assert_eq!(
+        fetch_granular_history_prices(&db, "p21-c1", date).await,
+        vec![Decimal::new(375, 2)]
+    );
+    // The prior day's row survived the date-scoped clear.
+    assert_eq!(
+        fetch_granular_history_prices(&db, "p21-c1", prior).await,
+        vec![Decimal::new(300, 2)]
+    );
+}

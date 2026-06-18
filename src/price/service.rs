@@ -98,6 +98,11 @@ impl PriceService {
         let event_processor = PriceEventProcessor::new(BATCH_SIZE);
         let granular_failures = AtomicU64::new(0);
         let timings = WriteTimings::default();
+        // Dates already cleared from granular_price_history this run, so the daily
+        // plain-INSERT path clears each date once before reloading it (idempotent
+        // same-day re-run without the per-row upsert cost).
+        let cleared_history_dates =
+            std::sync::Mutex::new(std::collections::HashSet::<NaiveDate>::new());
         let mut cards_seen = 0usize;
         let mut next_log = PROGRESS_LOG_EVERY;
 
@@ -109,7 +114,13 @@ impl PriceService {
                     info!("Ingested {} card prices so far...", cards_seen);
                     next_log += PROGRESS_LOG_EVERY;
                 }
-                Box::pin(self.save_prices(batch, &valid_card_ids, &granular_failures, &timings))
+                Box::pin(self.save_prices(
+                    batch,
+                    &valid_card_ids,
+                    &granular_failures,
+                    &timings,
+                    &cleared_history_dates,
+                ))
             })
             .await?;
         info!("Finished ingesting prices for {} cards.", cards_seen);
@@ -359,6 +370,7 @@ impl PriceService {
         valid_card_ids: &std::collections::HashSet<String>,
         granular_failures: &AtomicU64,
         timings: &WriteTimings,
+        cleared_history_dates: &std::sync::Mutex<std::collections::HashSet<NaiveDate>>,
     ) -> Result<()> {
         // Split the per-card bundle into derived averages (for the existing
         // price/price_history tables) and granular rows (for granular_price),
@@ -401,9 +413,19 @@ impl PriceService {
                 Ok(current_count) => debug!("Saved {} current granular rows.", current_count),
                 Err(e) => Self::note_granular_failure(granular_failures, "granular_price", &e),
             }
+            // granular_price_history: today's date never pre-exists on a fresh
+            // run, so clear each ingest date once and plain-INSERT (no per-row
+            // ON CONFLICT, ~24x cheaper - scry#25). CK-direct overwrites its
+            // slice afterward via the upsert path.
+            if let Err(e) = self
+                .clear_history_dates_once(&granular, cleared_history_dates)
+                .await
+            {
+                Self::note_granular_failure(granular_failures, "granular_price_history clear", &e);
+            }
             match timed(
                 &timings.granular_price_history,
-                self.repository.save_granular_price_history(&granular),
+                self.repository.insert_granular_price_history(&granular),
             )
             .await
             {
@@ -412,6 +434,32 @@ impl PriceService {
                     Self::note_granular_failure(granular_failures, "granular_price_history", &e)
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Delete each ingest date from `granular_price_history` once per run, before
+    /// any plain INSERT for that date, so a same-day re-run stays idempotent
+    /// without the per-row upsert cost. The daily feed carries a single date, so
+    /// this is one delete on the first batch and a no-op thereafter.
+    async fn clear_history_dates_once(
+        &self,
+        granular: &[GranularPrice],
+        cleared: &std::sync::Mutex<std::collections::HashSet<NaiveDate>>,
+    ) -> Result<()> {
+        let mut dates: Vec<NaiveDate> = granular.iter().map(|r| r.date).collect();
+        dates.sort_unstable();
+        dates.dedup();
+        let to_clear: Vec<NaiveDate> = {
+            let mut seen = cleared.lock().unwrap();
+            dates.into_iter().filter(|d| seen.insert(*d)).collect()
+        };
+        for d in to_clear {
+            let deleted = self
+                .repository
+                .delete_granular_price_history_for_date(d)
+                .await?;
+            debug!("Cleared {deleted} granular_price_history rows for {d} before plain insert.");
         }
         Ok(())
     }
