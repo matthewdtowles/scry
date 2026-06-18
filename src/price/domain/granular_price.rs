@@ -57,6 +57,24 @@ impl GranularPrice {
             qty: None,
         })
     }
+
+    /// Order rows by the storage index key (`card_id, provider, price_type,
+    /// finish, condition, date`) so a bulk upsert inserts into the btree in key
+    /// order - sequential leaf access instead of the random-UUID order the
+    /// stream delivers, which is the dominant write cost on the large granular
+    /// tables. `date` is constant within a daily run but is included so the
+    /// historical (multi-date) pass is ordered too.
+    pub fn sort_for_bulk_write(rows: &mut [GranularPrice]) {
+        rows.sort_unstable_by(|a, b| {
+            a.card_id
+                .cmp(&b.card_id)
+                .then_with(|| a.provider.cmp(&b.provider))
+                .then_with(|| a.price_type.cmp(&b.price_type))
+                .then_with(|| a.finish.cmp(&b.finish))
+                .then_with(|| a.condition.cmp(&b.condition))
+                .then_with(|| a.date.cmp(&b.date))
+        });
+    }
 }
 
 /// A card's full price contribution from one stream pass: the granular rows for
@@ -105,5 +123,39 @@ mod tests {
     #[test]
     fn test_new_negative_price_fails() {
         assert!(valid(Decimal::from(-1)).is_err());
+    }
+
+    #[test]
+    fn sort_for_bulk_write_orders_by_index_key() {
+        let mk = |card: &str, provider: &str| {
+            GranularPrice::new(
+                card.to_string(),
+                provider.to_string(),
+                "retail".to_string(),
+                "normal".to_string(),
+                GranularPrice::DEFAULT_CONDITION.to_string(),
+                date(),
+                Decimal::ONE,
+            )
+            .unwrap()
+        };
+        let mut rows = vec![
+            mk("c2", "tcgplayer"),
+            mk("c1", "tcgplayer"),
+            mk("c1", "cardkingdom"),
+        ];
+        GranularPrice::sort_for_bulk_write(&mut rows);
+        let keys: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|r| (r.card_id.as_str(), r.provider.as_str()))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("c1", "cardkingdom"),
+                ("c1", "tcgplayer"),
+                ("c2", "tcgplayer"),
+            ]
+        );
     }
 }

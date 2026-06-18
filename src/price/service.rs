@@ -14,7 +14,12 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-const BATCH_SIZE: usize = 500;
+/// Cards buffered per DB flush. Larger batches give larger key-sorted runs into
+/// the granular tables (better btree insert locality) and fewer round trips;
+/// granular rows are sorted by index key before each write (see
+/// `GranularPrice::sort_for_bulk_write`). ~4k cards is approx 32k granular
+/// rows/batch.
+const BATCH_SIZE: usize = 4000;
 /// Emit an info-level progress line roughly every this many cards so a slow but
 /// healthy stream is visible at the default `scry=info` verbosity.
 const PROGRESS_LOG_EVERY: usize = 20_000;
@@ -207,11 +212,12 @@ impl PriceService {
         unmatched: &AtomicU64,
         timings: &WriteTimings,
     ) -> Result<()> {
-        let (rows, batch_unmatched) = granular_from_ck_products(products, scryfall_map, date);
+        let (mut rows, batch_unmatched) = granular_from_ck_products(products, scryfall_map, date);
         unmatched.fetch_add(batch_unmatched, Ordering::Relaxed);
         if rows.is_empty() {
             return Ok(());
         }
+        GranularPrice::sort_for_bulk_write(&mut rows);
         let saved = timed(
             &timings.granular_price,
             self.repository.save_granular_prices(&rows),
@@ -335,6 +341,7 @@ impl PriceService {
             debug!("Saved batch of {} prices to history table.", history_count);
         }
         if !granular.is_empty() {
+            GranularPrice::sort_for_bulk_write(&mut granular);
             // Best-effort (see ingest_all_historical).
             match timed(
                 &timings.granular_price_history,
@@ -389,6 +396,7 @@ impl PriceService {
             debug!("Saved batch of {} prices to history table.", history_count);
         }
         if !granular.is_empty() {
+            GranularPrice::sort_for_bulk_write(&mut granular);
             // Best-effort and independent per table: a failure on the secondary
             // per-vendor store must not stall the averaged price refresh above or
             // the rest of the stream (see ingest_all_today).
