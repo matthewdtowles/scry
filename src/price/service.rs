@@ -14,6 +14,9 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 const BATCH_SIZE: usize = 500;
+/// Emit an info-level progress line roughly every this many cards so a slow but
+/// healthy stream is visible at the default `scry=info` verbosity.
+const PROGRESS_LOG_EVERY: usize = 20_000;
 
 pub struct RetentionResult {
     pub weekly_deleted: i64,
@@ -93,13 +96,21 @@ impl PriceService {
 
         let event_processor = PriceEventProcessor::new(BATCH_SIZE);
         let granular_failures = AtomicU64::new(0);
+        let mut cards_seen = 0usize;
+        let mut next_log = PROGRESS_LOG_EVERY;
 
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         json_stream_parser
             .parse_stream(byte_stream, |batch| {
+                cards_seen += batch.len();
+                if cards_seen >= next_log {
+                    info!("Ingested {} card prices so far...", cards_seen);
+                    next_log += PROGRESS_LOG_EVERY;
+                }
                 Box::pin(self.save_prices(batch, &valid_card_ids, &granular_failures))
             })
             .await?;
+        info!("Finished ingesting prices for {} cards.", cards_seen);
 
         Ok(granular_failures.load(Ordering::Relaxed))
     }
@@ -114,13 +125,21 @@ impl PriceService {
 
         let event_processor = HistoricalPriceEventProcessor::new(BATCH_SIZE);
         let granular_failures = AtomicU64::new(0);
+        let mut cards_seen = 0usize;
+        let mut next_log = PROGRESS_LOG_EVERY;
 
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         json_stream_parser
             .parse_stream(byte_stream, |batch| {
+                cards_seen += batch.len();
+                if cards_seen >= next_log {
+                    info!("Ingested {} historical card prices so far...", cards_seen);
+                    next_log += PROGRESS_LOG_EVERY;
+                }
                 Box::pin(self.save_price_history_only(batch, &valid_card_ids, &granular_failures))
             })
             .await?;
+        info!("Finished ingesting historical prices for {} cards.", cards_seen);
 
         Ok(granular_failures.load(Ordering::Relaxed))
     }

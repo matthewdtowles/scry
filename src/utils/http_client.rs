@@ -3,6 +3,7 @@ use bytes::Bytes;
 use futures::Stream;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
+use std::time::Duration;
 use tracing::{debug, info};
 
 #[derive(Clone)]
@@ -19,9 +20,17 @@ impl HttpClient {
     const CK_PRICELIST_URL: &str = "https://api.cardkingdom.com/api/v2/pricelist";
 
     pub fn new() -> Self {
-        Self {
-            client: Client::new(),
-        }
+        // A bare `Client::new()` has no timeouts, so a stalled CDN connection
+        // (or a body stream that goes silent mid-download) hangs forever with no
+        // log. `connect_timeout` caps the handshake; `read_timeout` is a
+        // per-read inactivity timeout that fails a stalled stream instead of a
+        // total deadline, so a legitimately long download is not cut off.
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(60))
+            .build()
+            .expect("failed to build HTTP client");
+        Self { client }
     }
 
     pub async fn all_cards_stream(
