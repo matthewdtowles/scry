@@ -18,7 +18,6 @@ impl PriceRepository {
     const PRICE_TABLE: &str = "price";
     const PRICE_HISTORY_TABLE: &str = "price_history";
     const GRANULAR_PRICE_TABLE: &str = "granular_price";
-    const GRANULAR_PRICE_HISTORY_TABLE: &str = "granular_price_history";
 
     pub fn new(db: Arc<ConnectionPool>) -> Self {
         Self { db }
@@ -85,20 +84,8 @@ impl PriceRepository {
         .await
     }
 
-    /// Upsert the dated history series (retention-bounded). Re-ingesting the same
-    /// day overwrites that day's price; distinct dates accumulate.
-    pub async fn save_granular_price_history(&self, prices: &[GranularPrice]) -> Result<i64> {
-        self.upsert_granular(
-            prices,
-            Self::GRANULAR_PRICE_HISTORY_TABLE,
-            " ON CONFLICT (card_id, provider, price_type, finish, condition, date) \
-              DO UPDATE SET price = EXCLUDED.price, qty = EXCLUDED.qty",
-        )
-        .await
-    }
-
-    /// Shared batch UPSERT for the granular tables. Both share the same columns
-    /// and row binding; callers supply the table and the `ON CONFLICT` clause.
+    /// Shared batch UPSERT for the granular current-offer table; callers supply
+    /// the table and the `ON CONFLICT` clause.
     async fn upsert_granular(
         &self,
         prices: &[GranularPrice],
@@ -220,16 +207,6 @@ impl PriceRepository {
 
     pub async fn apply_monthly_retention(&self) -> Result<i64> {
         self.monthly_retention(Self::PRICE_HISTORY_TABLE).await
-    }
-
-    pub async fn apply_granular_weekly_retention(&self) -> Result<i64> {
-        self.weekly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE)
-            .await
-    }
-
-    pub async fn apply_granular_monthly_retention(&self) -> Result<i64> {
-        self.monthly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE)
-            .await
     }
 
     /// Weekly tier: in the 7-28 day window, keep only Mondays (DOW 1). Date-based

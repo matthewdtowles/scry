@@ -301,61 +301,6 @@ fn granular_at(card_id: &str, date: NaiveDate, price: Decimal) -> GranularPrice 
     }
 }
 
-fn granular_on(card_id: &str, date: NaiveDate) -> GranularPrice {
-    granular_at(card_id, date, Decimal::new(300, 2))
-}
-
-async fn fetch_granular_dates(db: &Arc<ConnectionPool>, card_id: &str) -> Vec<NaiveDate> {
-    let mut qb = QueryBuilder::new("SELECT date FROM granular_price_history WHERE card_id = ");
-    qb.push_bind(card_id.to_string());
-    qb.push(" ORDER BY date");
-    let rows: Vec<(NaiveDate,)> = db.fetch_all_query_builder(qb).await.unwrap();
-    rows.into_iter().map(|(d,)| d).collect()
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_granular_retention_keeps_first_of_month_and_recent() {
-    let db = common::setup_test_db().await;
-    let set_repo = SetRepository::new(db.clone());
-    let card_repo = CardRepository::new(db.clone());
-    let price_repo = PriceRepository::new(db.clone());
-
-    set_repo
-        .save_sets(&[common::create_test_set("p11")])
-        .await
-        .unwrap();
-    card_repo
-        .save_cards(&[common::create_test_card("p11-c1", "p11")])
-        .await
-        .unwrap();
-
-    let first_of_month = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(); // old, 1st -> keep
-    let mid_month = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(); // old, not 1st -> delete
-    let recent = chrono::Utc::now().date_naive(); // recent -> keep
-    price_repo
-        .save_granular_price_history(&[
-            granular_on("p11-c1", first_of_month),
-            granular_on("p11-c1", mid_month),
-            granular_on("p11-c1", recent),
-        ])
-        .await
-        .unwrap();
-
-    // Nothing sits in the 7-28 day weekly window here.
-    let weekly = price_repo.apply_granular_weekly_retention().await.unwrap();
-    assert_eq!(weekly, 0);
-    // Monthly drops only the old non-1st row.
-    let monthly = price_repo.apply_granular_monthly_retention().await.unwrap();
-    assert_eq!(monthly, 1);
-
-    let dates = fetch_granular_dates(&db, "p11-c1").await;
-    assert_eq!(dates.len(), 2);
-    assert!(dates.contains(&first_of_month));
-    assert!(dates.contains(&recent));
-    assert!(!dates.contains(&mid_month));
-}
-
 #[tokio::test]
 #[ignore]
 async fn test_fetch_scryfall_card_id_map() {
