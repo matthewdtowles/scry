@@ -1,5 +1,5 @@
 use crate::price::cardkingdom::{granular_from_ck_products, CkPricelistEventProcessor, CkProduct};
-use crate::price::domain::{CardPrices, GranularPrice, Price};
+use crate::price::domain::{CardPrices, Price};
 use crate::price::event_processor::PriceEventProcessor;
 use crate::price::historical_event_processor::HistoricalPriceEventProcessor;
 use crate::price::repository::PriceRepository;
@@ -12,7 +12,7 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 const BATCH_SIZE: usize = 500;
 /// Emit an info-level progress line roughly every this many cards so a slow but
@@ -22,8 +22,6 @@ const PROGRESS_LOG_EVERY: usize = 20_000;
 pub struct RetentionResult {
     pub weekly_deleted: i64,
     pub monthly_deleted: i64,
-    pub granular_weekly_deleted: i64,
-    pub granular_monthly_deleted: i64,
     pub total_deleted: i64,
 }
 
@@ -82,21 +80,16 @@ impl PriceService {
         self.repository.price_history_count().await
     }
 
-    /// Ingest today's prices. Returns the number of best-effort granular write
-    /// failures (0 = clean). Granular (per-vendor) writes must not abort the
-    /// averaged price/price_history refresh (the critical path) or the rest of
-    /// the stream, so they are tallied rather than propagated; the caller decides
-    /// how to surface a non-zero count AFTER its own post-ingest steps run. A
-    /// hard failure (stream/network, or an averaged price/price_history write)
-    /// still returns Err and aborts.
-    pub async fn ingest_all_today(&self) -> Result<u64> {
+    /// Ingest today's prices into the averaged `price` / `price_history` tables.
+    /// The per-vendor granular store is no longer written here - CK-direct is the
+    /// sole granular writer (ROADMAP 10.10). A hard write/stream failure aborts.
+    pub async fn ingest_all_today(&self) -> Result<()> {
         debug!("Start ingestion of all prices");
         let byte_stream = self.client.all_today_prices_stream().await?;
         debug!("Received byte stream for today's prices.");
         let valid_card_ids = self.repository.fetch_all_card_ids().await?;
 
         let event_processor = PriceEventProcessor::new(BATCH_SIZE);
-        let granular_failures = AtomicU64::new(0);
         let timings = WriteTimings::default();
         let mut cards_seen = 0usize;
         let mut next_log = PROGRESS_LOG_EVERY;
@@ -109,25 +102,24 @@ impl PriceService {
                     info!("Ingested {} card prices so far...", cards_seen);
                     next_log += PROGRESS_LOG_EVERY;
                 }
-                Box::pin(self.save_prices(batch, &valid_card_ids, &granular_failures, &timings))
+                Box::pin(self.save_prices(batch, &valid_card_ids, &timings))
             })
             .await?;
         info!("Finished ingesting prices for {} cards.", cards_seen);
         timings.log_summary("ingest_all_today");
 
-        Ok(granular_failures.load(Ordering::Relaxed))
+        Ok(())
     }
 
-    /// Backfill historical prices. Returns the count of best-effort granular
-    /// history write failures (0 = clean); same policy as `ingest_all_today`.
-    pub async fn ingest_all_historical(&self) -> Result<u64> {
+    /// Backfill historical averaged prices into `price_history`. A hard
+    /// write/stream failure aborts.
+    pub async fn ingest_all_historical(&self) -> Result<()> {
         debug!("Start ingestion of all historical prices");
         let byte_stream = self.client.all_prices_stream().await?;
         debug!("Received byte stream for historical prices.");
         let valid_card_ids = self.repository.fetch_all_card_ids().await?;
 
         let event_processor = HistoricalPriceEventProcessor::new(BATCH_SIZE);
-        let granular_failures = AtomicU64::new(0);
         let timings = WriteTimings::default();
         let mut cards_seen = 0usize;
         let mut next_log = PROGRESS_LOG_EVERY;
@@ -140,12 +132,7 @@ impl PriceService {
                     info!("Ingested {} historical card prices so far...", cards_seen);
                     next_log += PROGRESS_LOG_EVERY;
                 }
-                Box::pin(self.save_price_history_only(
-                    batch,
-                    &valid_card_ids,
-                    &granular_failures,
-                    &timings,
-                ))
+                Box::pin(self.save_price_history_only(batch, &valid_card_ids, &timings))
             })
             .await?;
         info!(
@@ -154,7 +141,7 @@ impl PriceService {
         );
         timings.log_summary("ingest_all_historical");
 
-        Ok(granular_failures.load(Ordering::Relaxed))
+        Ok(())
     }
 
     /// Ingest Card Kingdom's direct pricelist: live buylist offers
@@ -217,11 +204,6 @@ impl PriceService {
             self.repository.save_granular_prices(&rows),
         )
         .await?;
-        timed(
-            &timings.granular_price_history,
-            self.repository.save_granular_price_history(&rows),
-        )
-        .await?;
         rows_saved.fetch_add(saved, Ordering::Relaxed);
         Ok(())
     }
@@ -271,25 +253,10 @@ impl PriceService {
         let monthly_deleted = self.repository.apply_monthly_retention().await?;
         info!("Monthly period: deleted {} rows", monthly_deleted);
 
-        let granular_weekly_deleted = self.repository.apply_granular_weekly_retention().await?;
-        info!(
-            "Granular weekly period: deleted {} rows",
-            granular_weekly_deleted
-        );
-
-        let granular_monthly_deleted = self.repository.apply_granular_monthly_retention().await?;
-        info!(
-            "Granular monthly period: deleted {} rows",
-            granular_monthly_deleted
-        );
-
-        let total_deleted =
-            weekly_deleted + monthly_deleted + granular_weekly_deleted + granular_monthly_deleted;
+        let total_deleted = weekly_deleted + monthly_deleted;
         Ok(RetentionResult {
             weekly_deleted,
             monthly_deleted,
-            granular_weekly_deleted,
-            granular_monthly_deleted,
             total_deleted,
         })
     }
@@ -306,22 +273,14 @@ impl PriceService {
         &self,
         card_prices: Vec<CardPrices>,
         valid_card_ids: &std::collections::HashSet<String>,
-        granular_failures: &AtomicU64,
         timings: &WriteTimings,
     ) -> Result<()> {
-        // Historical pass: averaged prices -> price_history (unchanged), and the
-        // same multi-date granular rows backfill granular_price_history.
+        // Historical backfill: averaged prices -> price_history.
         let mut history: Vec<Price> = Vec::new();
-        let mut granular: Vec<GranularPrice> = Vec::new();
         for cp in card_prices {
             for avg in cp.averages {
                 if valid_card_ids.contains(&avg.card_id) {
                     history.push(avg);
-                }
-            }
-            for row in cp.granular {
-                if valid_card_ids.contains(&row.card_id) {
-                    granular.push(row);
                 }
             }
         }
@@ -334,22 +293,6 @@ impl PriceService {
             .await?;
             debug!("Saved batch of {} prices to history table.", history_count);
         }
-        if !granular.is_empty() {
-            // Best-effort (see ingest_all_historical).
-            match timed(
-                &timings.granular_price_history,
-                self.repository.save_granular_price_history(&granular),
-            )
-            .await
-            {
-                Ok(history_count) => {
-                    debug!("Saved batch of {} granular history rows.", history_count)
-                }
-                Err(e) => {
-                    Self::note_granular_failure(granular_failures, "granular_price_history", &e)
-                }
-            }
-        }
         Ok(())
     }
 
@@ -357,23 +300,17 @@ impl PriceService {
         &self,
         card_prices: Vec<CardPrices>,
         valid_card_ids: &std::collections::HashSet<String>,
-        granular_failures: &AtomicU64,
         timings: &WriteTimings,
     ) -> Result<()> {
-        // Split the per-card bundle into derived averages (for the existing
-        // price/price_history tables) and granular rows (for granular_price),
-        // filtering both to known card ids in a single pass.
+        // Derive the averaged retail price per card for the price/price_history
+        // tables, filtering to known card ids. The per-vendor granular rows the
+        // event processor also emits are intentionally dropped - CK-direct is the
+        // sole granular writer now (ROADMAP 10.10).
         let mut averages: Vec<Price> = Vec::new();
-        let mut granular: Vec<GranularPrice> = Vec::new();
         for cp in card_prices {
             for avg in cp.averages {
                 if valid_card_ids.contains(&avg.card_id) {
                     averages.push(avg);
-                }
-            }
-            for row in cp.granular {
-                if valid_card_ids.contains(&row.card_id) {
-                    granular.push(row);
                 }
             }
         }
@@ -388,47 +325,6 @@ impl PriceService {
             .await?;
             debug!("Saved batch of {} prices to history table.", history_count);
         }
-        if !granular.is_empty() {
-            // Best-effort and independent per table: a failure on the secondary
-            // per-vendor store must not stall the averaged price refresh above or
-            // the rest of the stream (see ingest_all_today).
-            match timed(
-                &timings.granular_price,
-                self.repository.save_granular_prices(&granular),
-            )
-            .await
-            {
-                Ok(current_count) => debug!("Saved {} current granular rows.", current_count),
-                Err(e) => Self::note_granular_failure(granular_failures, "granular_price", &e),
-            }
-            match timed(
-                &timings.granular_price_history,
-                self.repository.save_granular_price_history(&granular),
-            )
-            .await
-            {
-                Ok(history_count) => debug!("Saved {} granular history rows.", history_count),
-                Err(e) => {
-                    Self::note_granular_failure(granular_failures, "granular_price_history", &e)
-                }
-            }
-        }
         Ok(())
-    }
-
-    /// Record a best-effort granular write failure: log the first one at ERROR
-    /// with full detail, throttle the rest to debug (a structural failure repeats
-    /// every batch and would otherwise flood the log), and bump the counter the
-    /// caller checks once the stream completes.
-    fn note_granular_failure(counter: &AtomicU64, table: &str, err: &anyhow::Error) {
-        let prev = counter.fetch_add(1, Ordering::Relaxed);
-        if prev == 0 {
-            error!("Best-effort {table} write failed (price refresh continues): {err:?}");
-        } else {
-            debug!(
-                "Best-effort {table} write failed again (#{}): {err}",
-                prev + 1
-            );
-        }
     }
 }

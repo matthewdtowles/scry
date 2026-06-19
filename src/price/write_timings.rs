@@ -5,16 +5,14 @@ use tracing::info;
 
 /// Cumulative per-table write timing for one ingest pass (scry#23 / #22).
 ///
-/// Each price batch writes up to four tables; this attributes the wall time so a
-/// single run shows where it actually goes. The two granular tables are expected
-/// to dominate. Counters are atomic so timing survives the shared-`&self` write
-/// path (the same reason `granular_failures` is an atomic).
+/// Attributes the wall time across the price tables so a single run shows where
+/// it goes. Counters are atomic so timing survives the shared-`&self` write path.
+/// `granular_price` is only written by CK-direct now (ROADMAP 10.10).
 #[derive(Default)]
 pub(crate) struct WriteTimings {
     pub price: TableTiming,
     pub price_history: TableTiming,
     pub granular_price: TableTiming,
-    pub granular_price_history: TableTiming,
 }
 
 impl WriteTimings {
@@ -22,15 +20,13 @@ impl WriteTimings {
     pub fn log_summary(&self, context: &str) {
         info!(
             "{context} write totals (ms/calls): price={}/{} price_history={}/{} \
-             granular_price={}/{} granular_price_history={}/{}",
+             granular_price={}/{}",
             self.price.millis(),
             self.price.calls(),
             self.price_history.millis(),
             self.price_history.calls(),
             self.granular_price.millis(),
             self.granular_price.calls(),
-            self.granular_price_history.millis(),
-            self.granular_price_history.calls(),
         );
     }
 }

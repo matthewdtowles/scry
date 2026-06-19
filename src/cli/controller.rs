@@ -457,10 +457,6 @@ ONE-TIME SETUP
         let result = self.price_service.apply_retention().await?;
         info!("Weekly period: deleted {} rows", result.weekly_deleted);
         info!("Monthly period: deleted {} rows", result.monthly_deleted);
-        info!(
-            "Granular price: weekly deleted {} rows, monthly deleted {} rows",
-            result.granular_weekly_deleted, result.granular_monthly_deleted
-        );
         info!("Total deleted: {}", result.total_deleted);
 
         info!("Starting set price history retention cleanup");
@@ -527,7 +523,7 @@ ONE-TIME SETUP
         }
 
         info!("Starting historical price backfill from AllPrices.json...");
-        let granular_failures = self.price_service.ingest_all_historical().await?;
+        self.price_service.ingest_all_historical().await?;
         info!("Historical price backfill complete.");
 
         if !skip_retention {
@@ -545,14 +541,6 @@ ONE-TIME SETUP
         info!("Starting set price history backfill from price_history...");
         self.handle_backfill_set_price_history().await?;
 
-        // price_history is fully backfilled above; surface any best-effort
-        // granular history failures last so the run still exits non-zero.
-        if granular_failures > 0 {
-            return Err(anyhow::anyhow!(
-                "{granular_failures} granular price-history write failure(s) during backfill; \
-                 price_history was backfilled — see ERROR log above"
-            ));
-        }
         Ok(())
     }
 
@@ -600,7 +588,7 @@ ONE-TIME SETUP
     async fn update_prices(&self) -> Result<()> {
         let total_prices_before = self.price_service.fetch_price_count().await?;
         let total_history_before = self.price_service.fetch_price_history_count().await?;
-        let granular_failures = self.price_service.ingest_all_today().await?;
+        self.price_service.ingest_all_today().await?;
         // CK-direct buylist enrichment (live offers + buy qty) runs AFTER the
         // MTGJSON ingest so it overwrites the indicative CK rows. Best-effort:
         // a failure here must never block the averaged price refresh -- it is
@@ -632,14 +620,8 @@ ONE-TIME SETUP
             warn!("Prices for today's date not yet available.");
         }
         // Averaged prices are fully refreshed and cleaned up above; surface any
-        // best-effort granular/CK-direct failures last so the run exits non-zero
-        // (alerting) without having held back the critical path.
-        if granular_failures > 0 {
-            return Err(anyhow::anyhow!(
-                "{granular_failures} granular price write failure(s) during today's ingest; \
-                 averaged price/price_history were updated — see ERROR log above"
-            ));
-        }
+        // best-effort CK-direct failure last so the run exits non-zero (alerting)
+        // without having held back the critical path.
         if let Some(e) = ck_error {
             return Err(anyhow::anyhow!(
                 "CK-direct buylist ingest failed; averaged price/price_history were updated: {e}"
