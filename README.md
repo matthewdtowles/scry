@@ -9,7 +9,7 @@ Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gathering data fr
 cp .env.example .env  # Configure DATABASE_URL
 
 # Run
-cargo run -- ingest           # Full ingest (sets, cards, prices)
+cargo run -- ingest           # Full ingest (sets, cards + sealed, prices)
 cargo run -- health           # Data integrity check
 cargo run -- interactive      # Launch interactive menu
 ```
@@ -26,18 +26,27 @@ scry interactive
 
 ### `ingest` — Ingest MTG data from Scryfall
 
-With no flags, ingests all sets, cards, and prices. Automatically runs post-ingest pruning and updates afterward.
+With no flags, ingests all sets, cards, sealed products, and prices, then automatically runs post-ingest pruning and updates. Cards and sealed products both live in MTGJSON's `AllPrintings.json`, so when both are requested (including the default full run) they are extracted in a **single pass** over that file rather than streaming the largest MTGJSON file twice.
 
 ```bash
-scry ingest              # Ingest everything (sets, cards, prices)
+scry ingest              # Ingest everything (sets, cards + sealed, prices)
 scry ingest -s           # Ingest sets only
 scry ingest -c           # Ingest cards only
+scry ingest --sealed     # Ingest sealed products only
 scry ingest -p           # Ingest prices only
 scry ingest -k <CODE>    # Ingest cards for a specific set (e.g., -k mh3)
 scry ingest -r           # Reset all data before ingesting (requires confirmation)
 ```
 
-Flags can be combined, e.g. `scry ingest -s -p` to ingest sets and prices.
+Flags can be combined, e.g. `scry ingest -s -p` to ingest sets and prices. Requesting both cards and sealed products shares the single `AllPrintings.json` pass; requesting only one runs that one's standalone stream.
+
+### `ingest-cards-sealed` — Cards + sealed products in one pass
+
+Ingests cards and sealed products together from a single `AllPrintings.json` stream (the same path the default `ingest` uses when both are due). Useful for refreshing just the catalog without re-running sets or prices. Sets must already be ingested.
+
+```bash
+scry ingest-cards-sealed
+```
 
 ### `post-ingest-prune` — Prune unwanted ingested data
 

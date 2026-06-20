@@ -53,6 +53,11 @@ impl CliController {
                     .await
             }
 
+            Commands::IngestCardsSealed {} => self
+                .ingest_cards_and_sealed()
+                .await
+                .inspect_err(|e| error!("Combined card+sealed ingest failed: {}", e)),
+
             Commands::PostIngestPrune {} => self
                 .post_ingest_prune()
                 .await
@@ -368,12 +373,38 @@ ONE-TIME SETUP
                 }
             }
         }
-        if do_all || cards {
-            match self.update_cards().await {
-                Ok(()) => info!("Card update completed successfully."),
+        // Cards and sealed products both come from AllPrintings.json. When both
+        // are requested (the default full run), ingest them in a single pass
+        // over that one stream instead of downloading + parsing the file twice;
+        // when only one is requested, run that one's standalone pass. Either way
+        // this happens before prices, which depend on cards.
+        let do_cards = do_all || cards;
+        let do_sealed = do_all || sealed;
+        if do_cards && do_sealed {
+            match self.ingest_cards_and_sealed().await {
+                Ok(()) => info!("Card + sealed product ingest completed successfully."),
                 Err(e) => {
-                    error!("Card udpate failure: {}", e);
+                    error!("Card + sealed product ingest failure: {}", e);
                     first_err.get_or_insert(e);
+                }
+            }
+        } else {
+            if do_cards {
+                match self.update_cards().await {
+                    Ok(()) => info!("Card update completed successfully."),
+                    Err(e) => {
+                        error!("Card update failure: {}", e);
+                        first_err.get_or_insert(e);
+                    }
+                }
+            }
+            if do_sealed {
+                match self.update_sealed_products().await {
+                    Ok(()) => info!("Sealed product update completed successfully."),
+                    Err(e) => {
+                        error!("Sealed product update failure: {}", e);
+                        first_err.get_or_insert(e);
+                    }
                 }
             }
         }
@@ -393,15 +424,6 @@ ONE-TIME SETUP
                 Ok(()) => info!("Price update completed successfully."),
                 Err(e) => {
                     error!("Price update failure: {}", e);
-                    first_err.get_or_insert(e);
-                }
-            }
-        }
-        if do_all || sealed {
-            match self.update_sealed_products().await {
-                Ok(()) => info!("Sealed product update completed successfully."),
-                Err(e) => {
-                    error!("Sealed product update failure: {}", e);
                     first_err.get_or_insert(e);
                 }
             }
@@ -569,6 +591,35 @@ ONE-TIME SETUP
         let total_after = self.sealed_product_service.fetch_count().await?;
         info!("Sealed products before: {}", total_before);
         info!("Sealed products after: {}", total_after);
+        Ok(())
+    }
+
+    /// Ingest cards + sealed products in a single pass over AllPrintings.json,
+    /// used by default when both are requested. Sets must already be ingested
+    /// (the card path skips unknown sets; sealed is filtered to set codes in
+    /// the `set` table).
+    async fn ingest_cards_and_sealed(&self) -> Result<()> {
+        let cards_before = self.card_service.fetch_count().await?;
+        let sealed_before = self.sealed_product_service.fetch_count().await?;
+        let valid_set_codes = self.sealed_product_service.fetch_valid_set_codes().await?;
+        let sealed_repo = self.sealed_product_service.repository();
+        let start = std::time::Instant::now();
+        let sealed_saved = self
+            .card_service
+            .ingest_all_with_sealed(sealed_repo, valid_set_codes)
+            .await?;
+        let elapsed = start.elapsed();
+        let cards_after = self.card_service.fetch_count().await?;
+        let sealed_after = self.sealed_product_service.fetch_count().await?;
+        info!(
+            "Single-pass card+sealed ingest finished in {:.1}s",
+            elapsed.as_secs_f64()
+        );
+        info!("Cards: {} -> {}", cards_before, cards_after);
+        info!(
+            "Sealed products: {} -> {} ({} saved this run)",
+            sealed_before, sealed_after, sealed_saved
+        );
         Ok(())
     }
 

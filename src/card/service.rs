@@ -6,10 +6,15 @@ use crate::{
         repository::CardRepository,
     },
     database::ConnectionPool,
+    ingest::{CardSealedEventProcessor, IngestRecord},
     price::service::PriceService,
+    sealed_product::{
+        domain::SealedProduct, repository::SealedProductRepository, service::SealedProductService,
+    },
     utils::{HttpClient, JsonStreamParser},
 };
 use anyhow::{Context, Result};
+use futures::future::BoxFuture;
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -88,66 +93,161 @@ impl CardService {
         let foreign_cards = self.foreign_cards.clone();
         json_stream_parser
             .parse_stream(byte_stream, move |batch| {
+                Self::save_card_batch(
+                    repo.clone(),
+                    sem.clone(),
+                    existing_set_cache.clone(),
+                    foreign_cards.clone(),
+                    batch,
+                )
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Persist one parsed card batch: skip cards for sets not yet in the DB
+    /// (cached set-existence check), merge/filter, record foreign-card ids for
+    /// later pruning, then save cards + legalities. Bounded by `sem` and run on
+    /// a spawned task so batches save concurrently. Shared by [`Self::ingest_all`]
+    /// and [`Self::ingest_all_with_sealed`].
+    fn save_card_batch(
+        repo: CardRepository,
+        sem: Arc<Semaphore>,
+        cache: Arc<Mutex<HashSet<String>>>,
+        foreign_cards: Arc<Mutex<Vec<String>>>,
+        batch: Vec<Card>,
+    ) -> BoxFuture<'static, Result<()>> {
+        Box::pin(async move {
+            if batch.is_empty() {
+                return Ok(());
+            }
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .context("semaphore closed while acquiring card ingest permit")?;
+            let mut batch_owned = batch;
+            let handle = tokio::spawn(async move {
+                let _permit_guard = permit;
+                let set_code = batch_owned[0].set_code.clone();
+                {
+                    let cache_lock = cache.lock().await;
+                    if !cache_lock.contains(&set_code) {
+                        drop(cache_lock);
+                        match repo.set_exists(&set_code).await {
+                            Ok(true) => {
+                                let mut cache_lock = cache.lock().await;
+                                cache_lock.insert(set_code.clone());
+                            }
+                            Ok(false) => {
+                                warn!("Skipping cards for missing set {}", set_code);
+                                return Ok::<(), anyhow::Error>(());
+                            }
+                            Err(e) => return Err::<(), anyhow::Error>(e),
+                        }
+                    }
+                }
+                batch_owned = CardService::merge_and_filter_cards(batch_owned);
+                let mut foreign_ids = Vec::new();
+                for c in &batch_owned {
+                    if c.is_foreign() {
+                        foreign_ids.push(c.id.clone());
+                    }
+                }
+                if !foreign_ids.is_empty() {
+                    let mut lock = foreign_cards.lock().await;
+                    lock.extend(foreign_ids);
+                }
+                if !batch_owned.is_empty() {
+                    repo.save_cards(&batch_owned).await?;
+                    repo.save_legalities(&batch_owned).await?;
+                }
+                Ok::<(), anyhow::Error>(())
+            });
+            match handle.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(join_err) => Err(anyhow::anyhow!("Task join error: {}", join_err)),
+            }
+        })
+    }
+
+    /// Single-pass sibling of [`Self::ingest_all`]: ingests cards **and** sealed
+    /// products from one `AllPrintings.json` stream via the tee processor in
+    /// [`crate::ingest`], so the file is downloaded + tokenized once instead of
+    /// twice. The card path is identical to `ingest_all` (shared
+    /// `save_card_batch`, same `foreign_cards` field for pruning); sealed
+    /// products are filtered to known set codes and saved through `sealed_repo`.
+    /// Returns the number of sealed products saved.
+    pub async fn ingest_all_with_sealed(
+        &self,
+        sealed_repo: SealedProductRepository,
+        valid_set_codes: HashSet<String>,
+    ) -> Result<i64> {
+        debug!("Start single-pass ingestion of cards + sealed products");
+        {
+            let mut lock = self.foreign_cards.lock().await;
+            lock.clear();
+        }
+        let valid_set_codes = Arc::new(valid_set_codes);
+        let byte_stream = self.client.all_cards_stream().await?;
+        let existing_set_cache: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let sem = Arc::new(Semaphore::new(Self::CONCURRENCY));
+        let event_processor =
+            CardSealedEventProcessor::new(Self::BATCH_SIZE, SealedProductService::BATCH_SIZE);
+        let mut json_stream_parser = JsonStreamParser::new(event_processor);
+        let repo = self.repository.clone();
+        let foreign_cards = self.foreign_cards.clone();
+        let sealed_total = Arc::new(Mutex::new(0i64));
+        let sealed_total_for_closure = sealed_total.clone();
+        json_stream_parser
+            .parse_stream(byte_stream, move |batch| {
                 let repo = repo.clone();
                 let sem = sem.clone();
                 let cache = existing_set_cache.clone();
                 let foreign_cards = foreign_cards.clone();
+                let sealed_repo = sealed_repo.clone();
+                let valid_set_codes = valid_set_codes.clone();
+                let sealed_total = sealed_total_for_closure.clone();
                 Box::pin(async move {
-                    if batch.is_empty() {
-                        return Ok(());
+                    // In practice each batch is homogeneous (only one extractor
+                    // flushes per event), but split by variant to be safe.
+                    let mut cards: Vec<Card> = Vec::new();
+                    let mut sealed: Vec<SealedProduct> = Vec::new();
+                    for record in batch {
+                        match record {
+                            IngestRecord::Card(c) => cards.push(c),
+                            IngestRecord::Sealed(s) => sealed.push(s),
+                        }
                     }
-                    let permit = sem
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .context("semaphore closed while acquiring card ingest permit")?;
-                    let mut batch_owned = batch.to_vec();
-                    let handle = tokio::spawn(async move {
-                        let _permit_guard = permit;
-                        let set_code = batch_owned[0].set_code.clone();
-                        {
-                            let cache_lock = cache.lock().await;
-                            if !cache_lock.contains(&set_code) {
-                                drop(cache_lock);
-                                match repo.set_exists(&set_code).await {
-                                    Ok(true) => {
-                                        let mut cache_lock = cache.lock().await;
-                                        cache_lock.insert(set_code.clone());
-                                    }
-                                    Ok(false) => {
-                                        warn!("Skipping cards for missing set {}", set_code);
-                                        return Ok::<(), anyhow::Error>(());
-                                    }
-                                    Err(e) => return Err::<(), anyhow::Error>(e),
+                    if !cards.is_empty() {
+                        Self::save_card_batch(repo, sem, cache, foreign_cards, cards).await?;
+                    }
+                    if !sealed.is_empty() {
+                        let set_code = sealed[0].set_code.clone();
+                        let filtered: Vec<SealedProduct> = sealed
+                            .into_iter()
+                            .filter(|p| valid_set_codes.contains(&p.set_code))
+                            .collect();
+                        if !filtered.is_empty() {
+                            match sealed_repo.save(&filtered).await {
+                                Ok(count) => {
+                                    let mut lock = sealed_total.lock().await;
+                                    *lock += count;
                                 }
+                                Err(e) => warn!(
+                                    "Failed to save sealed products for set {}: {:#}",
+                                    set_code, e
+                                ),
                             }
                         }
-                        batch_owned = CardService::merge_and_filter_cards(batch_owned);
-                        let mut foreign_ids = Vec::new();
-                        for c in &batch_owned {
-                            if c.is_foreign() {
-                                foreign_ids.push(c.id.clone());
-                            }
-                        }
-                        if !foreign_ids.is_empty() {
-                            let mut lock = foreign_cards.lock().await;
-                            lock.extend(foreign_ids);
-                        }
-                        if !batch_owned.is_empty() {
-                            repo.save_cards(&batch_owned).await?;
-                            repo.save_legalities(&batch_owned).await?;
-                        }
-                        Ok::<(), anyhow::Error>(())
-                    });
-                    match handle.await {
-                        Ok(Ok(())) => Ok(()),
-                        Ok(Err(e)) => Err(e),
-                        Err(join_err) => Err(anyhow::anyhow!("Task join error: {}", join_err)),
                     }
+                    Ok(())
                 })
             })
             .await?;
-        Ok(())
+        let final_total = *sealed_total.lock().await;
+        Ok(final_total)
     }
 
     pub async fn delete_all(&self) -> Result<i64> {

@@ -17,7 +17,7 @@ pub struct SealedProductService {
 }
 
 impl SealedProductService {
-    const BATCH_SIZE: usize = 200;
+    pub(crate) const BATCH_SIZE: usize = 200;
 
     pub fn new(db: Arc<ConnectionPool>, http_client: Arc<HttpClient>) -> Self {
         Self {
@@ -29,6 +29,23 @@ impl SealedProductService {
 
     pub async fn fetch_count(&self) -> Result<i64> {
         self.repository.count().await
+    }
+
+    /// The sealed-product repository (cheap clone) for the single-pass ingest
+    /// in [`crate::card::service::CardService::ingest_all_with_sealed`].
+    pub fn repository(&self) -> SealedProductRepository {
+        self.repository.clone()
+    }
+
+    /// Set codes currently in the `set` table - the sealed-product set filter.
+    pub async fn fetch_valid_set_codes(&self) -> Result<HashSet<String>> {
+        Ok(self
+            .set_repository
+            .fetch_all_set_codes()
+            .await
+            .context("Failed to load set codes for sealed-product filter")?
+            .into_iter()
+            .collect())
     }
 
     /// Ingest all sealed products by streaming AllPrintings.json.
