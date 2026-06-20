@@ -2,6 +2,7 @@ pub mod card;
 pub mod config;
 pub mod database;
 pub mod health_check;
+pub mod ingest;
 pub mod portfolio;
 pub mod price;
 pub mod sealed_product;

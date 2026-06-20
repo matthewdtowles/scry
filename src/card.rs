@@ -1,5 +1,5 @@
 pub mod domain;
-mod event_processor;
+pub(crate) mod event_processor;
 mod mapper;
 pub mod repository;
 pub mod service;

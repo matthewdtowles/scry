@@ -12,6 +12,7 @@ mod cli;
 mod config;
 mod database;
 mod health_check;
+mod ingest;
 mod portfolio;
 mod price;
 mod sealed_product;

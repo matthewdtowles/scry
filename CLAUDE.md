@@ -12,7 +12,7 @@ Scry is a Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gatheri
 cargo test                        # Run unit tests only (integration tests are #[ignore]d)
 cargo test card::                 # Run unit tests in a specific module
 cargo build --release             # Production build
-cargo run -- ingest               # Full ingest: sets, cards, prices + post-ingest prune/updates
+cargo run -- ingest               # Full ingest: sets, cards + sealed, prices + post-ingest prune/updates
 cargo run -- ingest -s            # Ingest sets only
 cargo run -- ingest -c            # Ingest cards only
 cargo run -- ingest -p            # Ingest prices only
@@ -83,6 +83,7 @@ src/
 │   └── controller.rs    — Command dispatch, orchestrates service calls
 ├── config.rs            — Env-based config (DATABASE_URL, pool size)
 ├── database.rs          — ConnectionPool wrapper around SQLx PgPool
+├── ingest.rs            — Single-pass card + sealed tee (CardSealedEventProcessor) over AllPrintings.json
 ├── card/
 │   ├── domain/          — Card, CardRarity, Format, Legality, LegalityStatus, MainSetClassifier
 │   ├── event_processor.rs — JsonEventProcessor impl for streaming card parsing
@@ -110,11 +111,11 @@ src/
 
 ### Key Design Patterns
 
-**Streaming JSON parsing**: Card and price ingestion uses `JsonStreamParser<T, P>` with the `JsonEventProcessor` trait. This streams Scryfall's bulk data files (~200MB+) through actson without loading them into memory. Each module implements its own `EventProcessor` that emits batches.
+**Streaming JSON parsing**: Card, sealed-product, and price ingestion use `JsonStreamParser<T, P>` with the `JsonEventProcessor` trait. This streams Scryfall's bulk data files (~200MB+) through actson without loading them into memory. Each module implements its own `EventProcessor` that emits batches. Cards and sealed products both come from `AllPrintings.json`, so `ingest.rs`'s `CardSealedEventProcessor` tees one stream to both extractors (each tracks its own depth/skip state) to avoid downloading + parsing that file twice.
 
 **Dependency injection via constructor**: `main.rs` wires up the dependency graph manually — `ConnectionPool` → services → `CliController`. Services take `Arc<ConnectionPool>` and `Arc<HttpClient>`.
 
-**Ingest pipeline**: The `ingest` command runs a full pipeline: ingest (sets → cards → prices) → post-ingest prune (remove unwanted data) → post-ingest updates (set sizes, set prices, main set classification fixes).
+**Ingest pipeline**: The `ingest` command runs a full pipeline: ingest (sets → cards + sealed products in one `AllPrintings.json` pass → prices) → post-ingest prune (remove unwanted data) → post-ingest updates (set sizes, set prices, main set classification fixes). Cards + sealed share a single pass when both are requested (the default); a single `-c` or `--sealed` flag runs that one's standalone stream.
 
 **Batch processing with concurrency**: Card ingestion uses `Semaphore` for bounded concurrency (6 concurrent tasks) with batch sizes of 500 records. Repositories use SQLx `QueryBuilder` for bulk UPSERTs via `ON CONFLICT`.
 
