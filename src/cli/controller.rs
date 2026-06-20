@@ -393,7 +393,7 @@ ONE-TIME SETUP
                 match self.update_cards().await {
                     Ok(()) => info!("Card update completed successfully."),
                     Err(e) => {
-                        error!("Card udpate failure: {}", e);
+                        error!("Card update failure: {}", e);
                         first_err.get_or_insert(e);
                     }
                 }
@@ -594,12 +594,10 @@ ONE-TIME SETUP
         Ok(())
     }
 
-    /// Perf prototype: ingest cards + sealed products in a single pass over
-    /// AllPrintings.json (vs the two separate streams that `update_cards` +
-    /// `update_sealed_products` use). Logs wall-clock + before/after counts so it
-    /// can be timed against running `ingest -c` then `ingest --sealed`. Sets must
-    /// already be ingested (the card path skips unknown sets; sealed is filtered
-    /// to set codes in the `set` table).
+    /// Ingest cards + sealed products in a single pass over AllPrintings.json,
+    /// used by default when both are requested. Sets must already be ingested
+    /// (the card path skips unknown sets; sealed is filtered to set codes in
+    /// the `set` table).
     async fn ingest_cards_and_sealed(&self) -> Result<()> {
         let cards_before = self.card_service.fetch_count().await?;
         let sealed_before = self.sealed_product_service.fetch_count().await?;
