@@ -15,6 +15,7 @@ mod health_check;
 mod ingest;
 mod portfolio;
 mod price;
+mod published_deck;
 mod sealed_product;
 mod set;
 mod utils;
@@ -53,6 +54,8 @@ async fn main() -> Result<()> {
         connection_pool.clone(),
         http_client.clone(),
     );
+    let published_deck_service =
+        published_deck::service::PublishedDeckService::new(connection_pool.clone());
     let cli_controller = CliController::new(
         card::service::CardService::new(
             connection_pool.clone(),
@@ -64,6 +67,7 @@ async fn main() -> Result<()> {
         health_check::service::HealthCheckService::new(connection_pool),
         portfolio_service,
         sealed_product_service,
+        published_deck_service,
     );
 
     if let Err(e) = cli_controller.handle_command(cli.command).await {
