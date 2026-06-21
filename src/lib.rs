@@ -5,6 +5,7 @@ pub mod health_check;
 pub mod ingest;
 pub mod portfolio;
 pub mod price;
+pub mod published_deck;
 pub mod sealed_product;
 pub mod set;
 pub mod utils;

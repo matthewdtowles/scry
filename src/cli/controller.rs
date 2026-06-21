@@ -1,6 +1,6 @@
 use crate::{
     cli::Commands, portfolio::service::PortfolioService, price::PriceService,
-    sealed_product::service::SealedProductService,
+    published_deck::service::PublishedDeckService, sealed_product::service::SealedProductService,
 };
 use anyhow::Result;
 use dialoguer::{theme::ColorfulTheme, Confirm, Select};
@@ -14,6 +14,7 @@ pub struct CliController {
     health_service: crate::health_check::service::HealthCheckService,
     portfolio_service: PortfolioService,
     sealed_product_service: SealedProductService,
+    published_deck_service: PublishedDeckService,
 }
 
 impl CliController {
@@ -24,6 +25,7 @@ impl CliController {
         health_service: crate::health_check::service::HealthCheckService,
         portfolio_service: PortfolioService,
         sealed_product_service: SealedProductService,
+        published_deck_service: PublishedDeckService,
     ) -> Self {
         Self {
             card_service,
@@ -32,6 +34,7 @@ impl CliController {
             health_service,
             portfolio_service,
             sealed_product_service,
+            published_deck_service,
         }
     }
 
@@ -57,6 +60,11 @@ impl CliController {
                 .ingest_cards_and_sealed()
                 .await
                 .inspect_err(|e| error!("Combined card+sealed ingest failed: {}", e)),
+
+            Commands::IngestDecks { days } => self
+                .ingest_published_decks(days)
+                .await
+                .inspect_err(|e| error!("Published-deck ingest failed: {}", e)),
 
             Commands::PostIngestPrune {} => self
                 .post_ingest_prune()
@@ -591,6 +599,15 @@ ONE-TIME SETUP
         let total_after = self.sealed_product_service.fetch_count().await?;
         info!("Sealed products before: {}", total_before);
         info!("Sealed products after: {}", total_after);
+        Ok(())
+    }
+
+    async fn ingest_published_decks(&self, days: i64) -> Result<()> {
+        let before = self.published_deck_service.fetch_count().await?;
+        self.published_deck_service.ingest(days).await?;
+        let after = self.published_deck_service.fetch_count().await?;
+        info!("Published decks before: {}", before);
+        info!("Published decks after: {}", after);
         Ok(())
     }
 

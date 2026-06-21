@@ -47,6 +47,19 @@ pub enum Commands {
     /// Requires sets to already be ingested.
     IngestCardsSealed {},
 
+    /// Ingest published tournament decklists from external feeds (fbettega cache).
+    /// Resolves card names against the `card` table and prunes decks past the
+    /// retention window. Requires cards to already be ingested.
+    IngestDecks {
+        #[arg(
+            short,
+            long,
+            help = "How many days back to fetch tournament results.",
+            default_value_t = 7
+        )]
+        days: i64,
+    },
+
     /// Prune unwanted ingested data
     PostIngestPrune {},
 
