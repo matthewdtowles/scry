@@ -108,7 +108,15 @@ impl FbettegaSource {
             return Ok(Vec::new());
         }
         let resp = resp.error_for_status().with_context(|| format!("listing {path}"))?;
-        Ok(resp.json::<Vec<GhContent>>().await.unwrap_or_default())
+        match resp.json::<Vec<GhContent>>().await {
+            Ok(items) => Ok(items),
+            // A shape change / unexpected payload shouldn't fail the whole run,
+            // but log it so silent empties are debuggable.
+            Err(e) => {
+                warn!("fbettega: failed to parse listing for {path}: {e}");
+                Ok(Vec::new())
+            }
+        }
     }
 
     async fn fetch_file(&self, url: &str) -> Result<CacheItem> {

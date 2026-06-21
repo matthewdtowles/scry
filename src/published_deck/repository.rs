@@ -5,7 +5,6 @@ use chrono::NaiveDate;
 use sqlx::QueryBuilder;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::warn;
 
 #[derive(Clone)]
 pub struct PublishedDeckRepository {
@@ -69,9 +68,11 @@ impl PublishedDeckRepository {
              RETURNING id");
 
         let rows: Vec<(i32,)> = self.db.fetch_all_query_builder(qb).await?;
+        // The upsert always RETURNs a row today; treat a missing id as an error
+        // (rather than a silent success) so the caller logs and moves on instead
+        // of leaving the deck's card rows stale.
         let Some((deck_id,)) = rows.into_iter().next() else {
-            warn!("published_deck upsert returned no id for {}", deck.source_uri);
-            return Ok(());
+            anyhow::bail!("published_deck upsert returned no id for {}", deck.source_uri);
         };
 
         // Replace children so re-ingesting a changed deck stays consistent.
@@ -94,14 +95,17 @@ impl PublishedDeckRepository {
         Ok(())
     }
 
-    /// Drop decks whose tournament date is older than the cutoff. Returns the
-    /// number removed.
+    /// Drop decks older than the cutoff. Decks with an unparseable/missing
+    /// tournament date fall back to `updated_at` so they can't accumulate
+    /// forever past the retention window. Returns the number removed.
     pub async fn prune_older_than(&self, cutoff: NaiveDate) -> Result<i64> {
         let mut qb = QueryBuilder::new(
             "WITH deleted AS (DELETE FROM published_deck WHERE tournament_date < ",
         );
         qb.push_bind(cutoff);
-        qb.push(" RETURNING 1) SELECT COUNT(*) FROM deleted");
+        qb.push(" OR (tournament_date IS NULL AND updated_at < ");
+        qb.push_bind(cutoff);
+        qb.push(") RETURNING 1) SELECT COUNT(*) FROM deleted");
         let rows: Vec<(i64,)> = self.db.fetch_all_query_builder(qb).await?;
         Ok(rows.into_iter().next().map(|(n,)| n).unwrap_or(0))
     }
