@@ -26,7 +26,6 @@ use tracing::{debug, warn};
 pub struct CardService {
     client: Arc<HttpClient>,
     repository: CardRepository,
-    foreign_cards: Arc<Mutex<Vec<String>>>,
     price_service: Arc<PriceService>,
 }
 
@@ -42,7 +41,6 @@ impl CardService {
         Self {
             client: http_client,
             repository: CardRepository::new(db),
-            foreign_cards: Arc::new(Mutex::new(Vec::new())),
             price_service,
         }
     }
@@ -79,10 +77,6 @@ impl CardService {
 
     pub async fn ingest_all(&self) -> Result<()> {
         debug!("Start ingestion of all cards");
-        {
-            let mut lock = self.foreign_cards.lock().await;
-            lock.clear();
-        }
         let byte_stream = self.client.all_cards_stream().await?;
         debug!("Received byte stream for all cards");
         let existing_set_cache: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -90,31 +84,23 @@ impl CardService {
         let event_processor = CardEventProcessor::new(Self::BATCH_SIZE);
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         let repo = self.repository.clone();
-        let foreign_cards = self.foreign_cards.clone();
         json_stream_parser
             .parse_stream(byte_stream, move |batch| {
-                Self::save_card_batch(
-                    repo.clone(),
-                    sem.clone(),
-                    existing_set_cache.clone(),
-                    foreign_cards.clone(),
-                    batch,
-                )
+                Self::save_card_batch(repo.clone(), sem.clone(), existing_set_cache.clone(), batch)
             })
             .await?;
         Ok(())
     }
 
     /// Persist one parsed card batch: skip cards for sets not yet in the DB
-    /// (cached set-existence check), merge/filter, record foreign-card ids for
-    /// later pruning, then save cards + legalities. Bounded by `sem` and run on
-    /// a spawned task so batches save concurrently. Shared by [`Self::ingest_all`]
-    /// and [`Self::ingest_all_with_sealed`].
+    /// (cached set-existence check), merge/filter, then save cards +
+    /// legalities. Bounded by `sem` and run on a spawned task so batches save
+    /// concurrently. Shared by [`Self::ingest_all`] and
+    /// [`Self::ingest_all_with_sealed`].
     fn save_card_batch(
         repo: CardRepository,
         sem: Arc<Semaphore>,
         cache: Arc<Mutex<HashSet<String>>>,
-        foreign_cards: Arc<Mutex<Vec<String>>>,
         batch: Vec<Card>,
     ) -> BoxFuture<'static, Result<()>> {
         Box::pin(async move {
@@ -148,16 +134,6 @@ impl CardService {
                     }
                 }
                 batch_owned = CardService::merge_and_filter_cards(batch_owned);
-                let mut foreign_ids = Vec::new();
-                for c in &batch_owned {
-                    if c.is_foreign() {
-                        foreign_ids.push(c.id.clone());
-                    }
-                }
-                if !foreign_ids.is_empty() {
-                    let mut lock = foreign_cards.lock().await;
-                    lock.extend(foreign_ids);
-                }
                 if !batch_owned.is_empty() {
                     repo.save_cards(&batch_owned).await?;
                     repo.save_legalities(&batch_owned).await?;
@@ -176,19 +152,14 @@ impl CardService {
     /// products from one `AllPrintings.json` stream via the tee processor in
     /// [`crate::ingest`], so the file is downloaded + tokenized once instead of
     /// twice. The card path is identical to `ingest_all` (shared
-    /// `save_card_batch`, same `foreign_cards` field for pruning); sealed
-    /// products are filtered to known set codes and saved through `sealed_repo`.
-    /// Returns the number of sealed products saved.
+    /// `save_card_batch`); sealed products are filtered to known set codes and
+    /// saved through `sealed_repo`. Returns the number of sealed products saved.
     pub async fn ingest_all_with_sealed(
         &self,
         sealed_repo: SealedProductRepository,
         valid_set_codes: HashSet<String>,
     ) -> Result<i64> {
         debug!("Start single-pass ingestion of cards + sealed products");
-        {
-            let mut lock = self.foreign_cards.lock().await;
-            lock.clear();
-        }
         let valid_set_codes = Arc::new(valid_set_codes);
         let byte_stream = self.client.all_cards_stream().await?;
         let existing_set_cache: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -197,7 +168,6 @@ impl CardService {
             CardSealedEventProcessor::new(Self::BATCH_SIZE, SealedProductService::BATCH_SIZE);
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         let repo = self.repository.clone();
-        let foreign_cards = self.foreign_cards.clone();
         let sealed_total = Arc::new(Mutex::new(0i64));
         let sealed_total_for_closure = sealed_total.clone();
         json_stream_parser
@@ -205,7 +175,6 @@ impl CardService {
                 let repo = repo.clone();
                 let sem = sem.clone();
                 let cache = existing_set_cache.clone();
-                let foreign_cards = foreign_cards.clone();
                 let sealed_repo = sealed_repo.clone();
                 let valid_set_codes = valid_set_codes.clone();
                 let sealed_total = sealed_total_for_closure.clone();
@@ -221,7 +190,7 @@ impl CardService {
                         }
                     }
                     if !cards.is_empty() {
-                        Self::save_card_batch(repo, sem, cache, foreign_cards, cards).await?;
+                        Self::save_card_batch(repo, sem, cache, cards).await?;
                     }
                     if !sealed.is_empty() {
                         let set_code = sealed[0].set_code.clone();
@@ -302,20 +271,12 @@ impl CardService {
         Ok(final_total)
     }
 
+    /// Delete foreign (non-English) cards that have no price row. Fully
+    /// DB-driven via the persisted `language` column, so it works the same
+    /// whether run inside the ingest pipeline or as a standalone
+    /// `post-ingest-prune` invocation.
     pub async fn prune_foreign_unpriced(&self) -> Result<i64> {
-        let card_candidates = {
-            let lock = self.foreign_cards.lock().await;
-            lock.clone()
-        };
-        if card_candidates.is_empty() {
-            debug!("No foreign card candidates found to prune.");
-            return Ok(0);
-        }
-        debug!(
-            "Checking {} foreign card candidates for pricing.",
-            card_candidates.len()
-        );
-        let ids_to_delete = self.repository.fetch_unpriced_ids(&card_candidates).await?;
+        let ids_to_delete = self.repository.fetch_foreign_unpriced_ids().await?;
         if ids_to_delete.is_empty() {
             debug!("Found 0 unpriced foreign cards to delete.");
             return Ok(0);
@@ -324,13 +285,9 @@ impl CardService {
             "Found {} unpriced foreign cards to delete.",
             ids_to_delete.len()
         );
-        let total_deleted = self
-            .repository
+        self.repository
             .delete_cards_batch(&ids_to_delete, Self::BATCH_SIZE as i64)
-            .await?;
-        let mut lock = self.foreign_cards.lock().await;
-        lock.clear();
-        Ok(total_deleted)
+            .await
     }
 
     pub async fn prune_duplicate_foils(&self) -> Result<i64> {

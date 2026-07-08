@@ -137,6 +137,55 @@ async fn test_count_for_sets() {
 
 #[tokio::test]
 #[ignore]
+async fn test_fetch_foreign_unpriced_ids() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+
+    set_repo
+        .save_sets(&[common::create_test_set("c08")])
+        .await
+        .unwrap();
+
+    // Foreign + unpriced -> should be returned
+    let mut foreign_unpriced = common::create_test_card("c08-1", "c08");
+    foreign_unpriced.language = "Japanese".to_string();
+    // English + unpriced -> must not be returned
+    let mut english_unpriced = common::create_test_card("c08-2", "c08");
+    english_unpriced.number = "2".to_string();
+    // Foreign + priced -> must not be returned
+    let mut foreign_priced = common::create_test_card("c08-3", "c08");
+    foreign_priced.language = "German".to_string();
+    foreign_priced.number = "3".to_string();
+
+    card_repo
+        .save_cards(&[foreign_unpriced, english_unpriced, foreign_priced])
+        .await
+        .unwrap();
+    db.execute_raw(
+        "INSERT INTO price (card_id, normal, date) VALUES ('c08-3', 1.00, CURRENT_DATE)
+         ON CONFLICT (card_id, date) DO NOTHING",
+    )
+    .await
+    .unwrap();
+
+    let ids = card_repo.fetch_foreign_unpriced_ids().await.unwrap();
+    assert!(ids.contains(&"c08-1".to_string()));
+    assert!(!ids.contains(&"c08-2".to_string()));
+    assert!(!ids.contains(&"c08-3".to_string()));
+
+    // The persisted language must round-trip through save_cards.
+    let fetched = card_repo
+        .fetch_ascii_cards_by_set_and_names("c08", &["Test Card c08-1".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(fetched.len(), 1);
+    assert_eq!(fetched[0].language, "Japanese");
+    assert!(fetched[0].is_foreign());
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_save_cards_persists_scryfall_id() {
     let db = common::setup_test_db().await;
     let set_repo = SetRepository::new(db.clone());

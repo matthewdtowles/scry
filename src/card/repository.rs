@@ -14,17 +14,16 @@ impl CardRepository {
         Self { db }
     }
 
-    pub async fn fetch_unpriced_ids(&self, candidate_ids: &[String]) -> Result<Vec<String>> {
-        if candidate_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut qb = QueryBuilder::new(
+    /// Ids of foreign (non-English) cards that have no price row. Derived
+    /// entirely from persisted data so the prune works as a standalone
+    /// command; cards saved before the `language` column existed default to
+    /// 'English' and are conservatively kept until re-ingested.
+    pub async fn fetch_foreign_unpriced_ids(&self) -> Result<Vec<String>> {
+        let qb = QueryBuilder::new(
             "SELECT c.id FROM card c
             LEFT JOIN price p ON p.card_id = c.id
-            WHERE p.id IS NULL and c.id = ANY(",
+            WHERE p.id IS NULL AND c.language NOT IN ('', 'English')",
         );
-        qb.push_bind(candidate_ids);
-        qb.push(")");
         let rows: Vec<(String,)> = self.db.fetch_all_query_builder(qb).await?;
         Ok(rows.into_iter().map(|r| r.0).collect())
     }
@@ -121,7 +120,7 @@ impl CardRepository {
         let mut query_builder = QueryBuilder::new(
             "INSERT INTO card (
                 id, artist, flavor_name, has_foil, has_non_foil,
-                in_main, is_alternative, is_reserved, mana_cost, name,
+                in_main, is_alternative, is_reserved, language, mana_cost, name,
                 number, oracle_text, tcgplayer_product_id,
                 tcgplayer_etched_product_id, rarity, set_code,
                 sort_number, type, layout, scryfall_id, colors
@@ -136,6 +135,7 @@ impl CardRepository {
                 .push_bind(&card.in_main)
                 .push_bind(&card.is_alternative)
                 .push_bind(&card.is_reserved)
+                .push_bind(&card.language)
                 .push_bind(&card.mana_cost)
                 .push_bind(&card.name)
                 .push_bind(&card.number)
@@ -159,6 +159,7 @@ impl CardRepository {
             in_main = EXCLUDED.in_main,
             is_alternative = EXCLUDED.is_alternative,
             is_reserved = EXCLUDED.is_reserved,
+            language = EXCLUDED.language,
             mana_cost = EXCLUDED.mana_cost,
             name = EXCLUDED.name,
             number = EXCLUDED.number,
@@ -180,6 +181,7 @@ impl CardRepository {
             card.in_main IS DISTINCT FROM EXCLUDED.in_main OR
             card.is_alternative IS DISTINCT FROM EXCLUDED.is_alternative OR
             card.is_reserved IS DISTINCT FROM EXCLUDED.is_reserved OR
+            card.language IS DISTINCT FROM EXCLUDED.language OR
             card.mana_cost IS DISTINCT FROM EXCLUDED.mana_cost OR
             card.name IS DISTINCT FROM EXCLUDED.name OR
             card.number IS DISTINCT FROM EXCLUDED.number OR

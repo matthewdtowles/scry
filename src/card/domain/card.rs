@@ -37,7 +37,9 @@ pub struct Card {
     #[sqlx(skip)]
     pub is_oversized: bool,
 
-    #[sqlx(skip)]
+    /// Printing language from MTGJSON (e.g. "English", "Japanese"; "" when the
+    /// feed omits it). Persisted so foreign-card pruning can run as a
+    /// standalone command instead of depending on in-memory ingest state.
     pub language: String,
 
     #[sqlx(skip)]
@@ -80,6 +82,9 @@ impl Card {
     }
 
     /// Is this a foreign (non-English) printing?
+    ///
+    /// `CardRepository::fetch_foreign_unpriced_ids` mirrors this rule in SQL
+    /// (`language NOT IN ('', 'English')`) — keep the two in sync.
     pub fn is_foreign(&self) -> bool {
         !self.language.is_empty() && self.language != "English"
     }
