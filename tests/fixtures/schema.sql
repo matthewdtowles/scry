@@ -65,6 +65,10 @@ CREATE TABLE IF NOT EXISTS card (
     in_main BOOLEAN NOT NULL DEFAULT true,
     is_alternative BOOLEAN NOT NULL DEFAULT false,
     is_reserved BOOLEAN NOT NULL DEFAULT false,
+    -- Printing language; defaults to 'English' so rows saved before the
+    -- column existed stay non-foreign until re-ingested. Mirrors the web
+    -- app migration that adds this column in prod.
+    language VARCHAR(32) NOT NULL DEFAULT 'English',
     mana_cost VARCHAR(255),
     name VARCHAR(255) NOT NULL,
     number VARCHAR(20) NOT NULL,
@@ -81,6 +85,10 @@ CREATE TABLE IF NOT EXISTS card (
     -- column added by the web app migration.
     colors TEXT[]
 );
+
+-- The CREATE above is IF NOT EXISTS, so also add the column to any
+-- pre-existing card table (same shape the prod migration takes).
+ALTER TABLE card ADD COLUMN IF NOT EXISTS language VARCHAR(32) NOT NULL DEFAULT 'English';
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_card_scryfall_id ON card (scryfall_id);
 
