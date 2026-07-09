@@ -22,7 +22,7 @@ impl CardRepository {
         let qb = QueryBuilder::new(
             "SELECT c.id FROM card c
             LEFT JOIN price p ON p.card_id = c.id
-            WHERE p.id IS NULL AND c.language NOT IN ('', 'English')",
+            WHERE p.card_id IS NULL AND c.language NOT IN ('', 'English')",
         );
         let rows: Vec<(String,)> = self.db.fetch_all_query_builder(qb).await?;
         Ok(rows.into_iter().map(|r| r.0).collect())
