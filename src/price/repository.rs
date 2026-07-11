@@ -126,12 +126,6 @@ impl PriceRepository {
         Ok(total)
     }
 
-    pub async fn delete_all(&self) -> Result<i64> {
-        let query = format!("DELETE FROM {}", Self::PRICE_TABLE);
-        let query_builder = QueryBuilder::new(query);
-        self.db.execute_query_builder(query_builder).await
-    }
-
     pub async fn delete_by_date(&self, date: NaiveDate) -> Result<i64> {
         let query = format!("DELETE FROM {} WHERE date = ", Self::PRICE_TABLE);
         let mut query_builder = QueryBuilder::new(query);

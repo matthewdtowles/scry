@@ -95,7 +95,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_card_scryfall_id ON card (scryfall_id);
 -- Legality table
 CREATE TABLE IF NOT EXISTS legality (
     id SERIAL PRIMARY KEY,
-    card_id VARCHAR(36) NOT NULL REFERENCES card(id),
+    card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
     format format_enum NOT NULL,
     status legality_status_enum NOT NULL,
     UNIQUE(card_id, format)
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS legality (
 -- Price table
 CREATE TABLE IF NOT EXISTS price (
     id SERIAL PRIMARY KEY,
-    card_id VARCHAR(36) NOT NULL REFERENCES card(id),
+    card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
     foil NUMERIC(10,2),
     normal NUMERIC(10,2),
     date DATE NOT NULL,
@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS price (
 -- Price history table
 CREATE TABLE IF NOT EXISTS price_history (
     id SERIAL PRIMARY KEY,
-    card_id VARCHAR(36) NOT NULL REFERENCES card(id),
+    card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
     foil NUMERIC(10,2),
     normal NUMERIC(10,2),
     date DATE NOT NULL,
@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS granular_price_history (
 -- Set price table
 CREATE TABLE IF NOT EXISTS set_price (
     id SERIAL PRIMARY KEY,
-    set_code VARCHAR(10) NOT NULL REFERENCES "set"(code) UNIQUE,
+    set_code VARCHAR(10) NOT NULL UNIQUE REFERENCES "set"(code) ON DELETE CASCADE,
     base_price NUMERIC(10,2),
     total_price NUMERIC(10,2),
     base_price_all NUMERIC(10,2),
@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS set_price (
 -- Set price history table
 CREATE TABLE IF NOT EXISTS set_price_history (
     id SERIAL PRIMARY KEY,
-    set_code VARCHAR(10) NOT NULL REFERENCES "set"(code),
+    set_code VARCHAR(10) NOT NULL REFERENCES "set"(code) ON DELETE CASCADE,
     base_price NUMERIC(10,2),
     total_price NUMERIC(10,2),
     base_price_all NUMERIC(10,2),
@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS set_price_history (
 -- Inventory table
 CREATE TABLE IF NOT EXISTS inventory (
     id SERIAL PRIMARY KEY,
-    card_id VARCHAR(36) NOT NULL REFERENCES card(id),
+    card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
     quantity INTEGER NOT NULL DEFAULT 0,
     foil_quantity INTEGER NOT NULL DEFAULT 0
 );
@@ -196,7 +196,7 @@ CREATE TABLE IF NOT EXISTS portfolio_value_history (
 CREATE TABLE IF NOT EXISTS sealed_product (
     uuid VARCHAR(36) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    set_code VARCHAR(10) NOT NULL REFERENCES "set"(code),
+    set_code VARCHAR(10) NOT NULL REFERENCES "set"(code) ON DELETE CASCADE,
     category VARCHAR(64),
     subtype VARCHAR(64),
     card_count INTEGER,

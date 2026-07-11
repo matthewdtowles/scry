@@ -272,31 +272,16 @@ impl CardRepository {
         Ok(exists)
     }
 
-    pub async fn delete_all(&self) -> Result<i64> {
-        self.delete_table(String::from("legality")).await?;
-        let cards_deleted = self.delete_table(String::from("card")).await?;
-        debug!("{} cards deleted.", cards_deleted);
-        Ok(cards_deleted)
-    }
-
+    /// Delete cards by id. All FK dependents of `card` (legality, price,
+    /// price_history, inventory, granular_price, and the user-data tables)
+    /// carry ON DELETE CASCADE in production, so deleting the `card` row alone
+    /// removes them - see the web repo's migration 046 (cross-repo X1/W9).
     pub async fn delete_cards_batch(&self, ids: &[String], batch_size: i64) -> Result<i64> {
         if ids.is_empty() {
             return Ok(0);
         }
         let mut total_deleted = 0i64;
         for chunk in ids.chunks(batch_size as usize) {
-            let mut qb = QueryBuilder::new("DELETE FROM legality WHERE card_id = ANY(");
-            qb.push_bind(chunk.to_vec());
-            qb.push(")");
-            self.db.execute_query_builder(qb).await?;
-            let mut qb = QueryBuilder::new("DELETE FROM price WHERE card_id = ANY(");
-            qb.push_bind(chunk.to_vec());
-            qb.push(")");
-            self.db.execute_query_builder(qb).await?;
-            let mut qb = QueryBuilder::new("DELETE FROM inventory WHERE card_id = ANY(");
-            qb.push_bind(chunk.to_vec());
-            qb.push(")");
-            self.db.execute_query_builder(qb).await?;
             let mut qb = QueryBuilder::new("DELETE FROM card WHERE id = ANY(");
             qb.push_bind(chunk.to_vec());
             qb.push(")");
@@ -306,10 +291,20 @@ impl CardRepository {
         Ok(total_deleted)
     }
 
-    async fn delete_table(&self, table: String) -> Result<i64> {
-        let qb = QueryBuilder::new(format!("DELETE FROM {} CASCADE", table));
-        let total_deleted = self.db.execute_query_builder(qb).await?;
-        debug!("{} {} entities deleted.", total_deleted, table);
-        Ok(total_deleted)
+    /// Wipe the entire MTG catalog for a full re-ingest (`ingest -r`). One
+    /// `TRUNCATE ... CASCADE` is atomic and faster than ordered deletes; CASCADE
+    /// clears every FK dependent of `card`/`set` (including user-owned rows that
+    /// reference a card, matching the per-card delete's cascade). RESTART
+    /// IDENTITY resets the serial keys so a fresh ingest starts clean.
+    pub async fn reset_all_data(&self) -> Result<()> {
+        self.db
+            .execute_raw(
+                "TRUNCATE TABLE card, \"set\", legality, price, price_history, \
+                 granular_price, set_price, set_price_history, sealed_product \
+                 RESTART IDENTITY CASCADE",
+            )
+            .await?;
+        debug!("Truncated all MTG catalog tables.");
+        Ok(())
     }
 }

@@ -208,11 +208,6 @@ impl PriceService {
         Ok(())
     }
 
-    pub async fn delete_all(&self) -> Result<i64> {
-        info!("Deleting all prices.");
-        self.repository.delete_all().await
-    }
-
     /// Remove all old prices from db
     pub async fn clean_up_prices(&self) -> Result<()> {
         let mut price_dates = self.repository.fetch_price_dates().await?;
