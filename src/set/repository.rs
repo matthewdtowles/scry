@@ -273,30 +273,21 @@ impl SetRepository {
         self.db.execute_query_builder(qb).await
     }
 
-    pub async fn delete_all(&self) -> Result<i64> {
-        let qb = QueryBuilder::new("DELETE FROM set CASCADE");
-        self.db.execute_query_builder(qb).await
-    }
-
+    /// Delete a set and all its contents. `card.set_code -> set` is NO ACTION
+    /// (deliberate - see web migration 046), so the set's cards are deleted
+    /// first; that cascades every card dependent, and deleting the `set` row
+    /// then cascades set_price/set_price_history/sealed_product.
     pub async fn delete_set_batch(&self, set_code: &str) -> Result<i64> {
         if set_code.is_empty() {
             return Ok(0);
         }
-        let mut qb = QueryBuilder::new("WITH to_del AS (SELECT id FROM card WHERE set_code = ");
+        let mut qb = QueryBuilder::new(
+            "WITH del_cards AS (
+                DELETE FROM card WHERE set_code = ",
+        );
         qb.push_bind(set_code);
         qb.push(
-            "),
-            del_legalities AS (
-                DELETE FROM legality WHERE card_id IN (SELECT id FROM to_del)
-            ),
-            del_prices AS (
-                DELETE FROM price WHERE card_id IN (SELECT id FROM to_del)
-            ),
-            del_inventory AS (
-                DELETE FROM inventory WHERE card_id IN (SELECT id FROM to_del)
-            ),
-            del_cards AS (
-                DELETE FROM card WHERE id IN (SELECT id FROM to_del) RETURNING id
+            " RETURNING id
             )
             DELETE FROM \"set\" WHERE code = ",
         );

@@ -730,13 +730,8 @@ ONE-TIME SETUP
             warn!("Skipped data reset.");
             return Ok(());
         }
-        let prices_deleted = self.price_service.delete_all().await?;
-        let cards_deleted = self.card_service.delete_all().await?;
-        let sets_deleted = self.set_service.delete_all().await?;
-        info!(
-            "All MTG data deleted: {} sets | {} cards | {} prices",
-            sets_deleted, cards_deleted, prices_deleted
-        );
+        self.card_service.reset_all_data().await?;
+        info!("All MTG data deleted.");
         Ok(())
     }
 

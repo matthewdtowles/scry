@@ -90,11 +90,6 @@ impl SetService {
         Ok(total_deleted)
     }
 
-    pub async fn delete_all(&self) -> Result<i64> {
-        debug!("Deleting all sets.");
-        self.repository.delete_all().await
-    }
-
     pub async fn prune_empty_sets(&self) -> Result<i64> {
         debug!("Deleting sets that do not have any cards.");
         let empty_sets: Vec<Set> = self.repository.fetch_empty_sets().await?;

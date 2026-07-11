@@ -219,9 +219,10 @@ impl CardService {
         Ok(final_total)
     }
 
-    pub async fn delete_all(&self) -> Result<i64> {
-        debug!("Deleting all prices.");
-        self.repository.delete_all().await
+    /// Wipe the entire MTG catalog for a full re-ingest (`ingest -r`).
+    pub async fn reset_all_data(&self) -> Result<()> {
+        debug!("Resetting all MTG catalog data.");
+        self.repository.reset_all_data().await
     }
 
     pub async fn cleanup_cards(&self, batch_size: i64) -> Result<u64> {

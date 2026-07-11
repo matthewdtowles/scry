@@ -1,6 +1,10 @@
 mod common;
 
+use chrono::NaiveDate;
+use rust_decimal::Decimal;
 use scry::card::repository::CardRepository;
+use scry::price::domain::Price;
+use scry::price::repository::PriceRepository;
 use scry::set::repository::SetRepository;
 
 #[tokio::test]
@@ -218,4 +222,54 @@ async fn test_save_cards_persists_scryfall_id() {
     // An identical re-save must be a no-op
     let saved = card_repo.save_cards(&[card]).await.unwrap();
     assert_eq!(saved, 0);
+}
+
+// Deleting a card that has price_history rows must succeed via ON DELETE
+// CASCADE (web migration 046 / cross-repo X1). Before the cascade, the FK on
+// price_history had no ON DELETE rule and this delete raised an FK violation.
+#[tokio::test]
+#[ignore]
+async fn test_delete_card_with_price_history_cascades() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+    let price_repo = PriceRepository::new(db.clone());
+
+    set_repo
+        .save_sets(&[common::create_test_set("c08")])
+        .await
+        .unwrap();
+    card_repo
+        .save_cards(&[common::create_test_card("c08-c1", "c08")])
+        .await
+        .unwrap();
+    price_repo
+        .save_price_history(&[Price {
+            id: None,
+            card_id: "c08-c1".to_string(),
+            normal: Some(Decimal::new(150, 2)),
+            foil: Some(Decimal::new(300, 2)),
+            date: NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
+        }])
+        .await
+        .unwrap();
+
+    let history_before = db
+        .count("SELECT COUNT(*) FROM price_history WHERE card_id = 'c08-c1'")
+        .await
+        .unwrap();
+    assert_eq!(history_before, 1);
+
+    let deleted = card_repo
+        .delete_cards_batch(&["c08-c1".to_string()], 500)
+        .await
+        .unwrap();
+    assert_eq!(deleted, 1);
+
+    // The price_history row is gone with the card, not left dangling.
+    let history_after = db
+        .count("SELECT COUNT(*) FROM price_history WHERE card_id = 'c08-c1'")
+        .await
+        .unwrap();
+    assert_eq!(history_after, 0);
 }
