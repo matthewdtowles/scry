@@ -258,15 +258,11 @@ impl PriceService {
 
     /// Apply the same tiered retention to `granular_price_history` (CK-direct
     /// buylist writes grow it daily without bound otherwise). Returns
-    /// `(weekly_deleted, monthly_deleted)`.
+    /// `(weekly_deleted, monthly_deleted)`. Logging is left to the caller,
+    /// matching `SetService`/`PortfolioService` retention.
     pub async fn apply_granular_retention(&self) -> Result<(i64, i64)> {
-        info!("Starting retention cleanup on granular_price_history");
         let weekly = self.repository.apply_granular_weekly_retention().await?;
         let monthly = self.repository.apply_granular_monthly_retention().await?;
-        info!(
-            "granular_price_history: weekly deleted {} rows, monthly deleted {} rows",
-            weekly, monthly
-        );
         Ok((weekly, monthly))
     }
 

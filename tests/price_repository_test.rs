@@ -174,7 +174,7 @@ async fn insert_granular_history(
             b.push_bind(id)
                 .push_bind("cardkingdom")
                 .push_bind("buylist")
-                .push_bind("nonfoil")
+                .push_bind("normal")
                 .push_bind("NM")
                 .push_bind(d)
                 .push_bind(p);
