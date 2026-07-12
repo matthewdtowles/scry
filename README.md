@@ -83,7 +83,7 @@ scry health --detailed   # Detailed health check
 
 ### `retention` — Apply retention policy
 
-Applies a tiered retention policy to `price_history`, `set_price_history`, and `portfolio_value_history`: keeps daily rows for 7 days, weekly (Mondays) for 7-28 days, and monthly (1st of month) for 28+ days.
+Applies a tiered retention policy to `price_history`, `granular_price_history`, `set_price_history`, and `portfolio_value_history`: keeps daily rows for 7 days, weekly (Mondays) for 7-28 days, and monthly (1st of month) for 28+ days.
 
 ```bash
 scry retention
