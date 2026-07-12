@@ -7,7 +7,6 @@ use tracing::{debug, info, warn};
 
 pub struct CardEventProcessor {
     batch: Vec<Card>,
-    batch_size: usize,
     card_object_depth: usize,
     current_card_json: String,
     current_set_code: Option<String>,
@@ -39,7 +38,15 @@ impl JsonEventProcessor<Card> for CardEventProcessor {
                         self.is_skipping_value = false;
                     }
                 }
-                _ => {}
+                _ => {
+                    // Scalar value (string, int, float, bool, null) — the
+                    // skipped value is consumed, so stop skipping. Without this
+                    // a scalar-valued skipped field would wedge the processor
+                    // in skip mode forever (matches SealedProductEventProcessor).
+                    if self.json_depth <= self.skip_depth {
+                        self.is_skipping_value = false;
+                    }
+                }
             }
             return Ok(0);
         }
@@ -91,7 +98,6 @@ impl CardEventProcessor {
     pub fn new(batch_size: usize) -> Self {
         Self {
             batch: Vec::with_capacity(batch_size),
-            batch_size,
             card_object_depth: 0,
             current_card_json: String::new(),
             current_set_code: None,
@@ -142,10 +148,12 @@ impl CardEventProcessor {
                 let card_result = self.parse_card_from_json(&self.current_card_json);
                 match card_result {
                     Ok(card) => {
+                        // Accumulate the whole set and flush only at the end of
+                        // its `cards` array (handle_end_array). Flushing mid-set
+                        // at a fixed count would split a card's two faces across
+                        // batches, so the cross-face mana-cost merge (done per
+                        // delivered batch) would silently miss the pair.
                         self.batch.push(card);
-                        if self.batch.len() >= self.batch_size {
-                            return Ok(self.batch.len());
-                        }
                     }
                     Err(e) => {
                         if let Some(code) = &self.current_set_code {
@@ -316,5 +324,87 @@ impl CardEventProcessor {
         let value: serde_json::Value = serde_json::from_str(json)?;
         let set_type = self.current_set_type.as_deref().unwrap_or("");
         CardMapper::map_json_to_card(&value, set_type)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::BufReader;
+
+    fn empty_parser() -> JsonParser<AsyncBufReaderJsonFeeder<&'static [u8]>> {
+        JsonParser::new(AsyncBufReaderJsonFeeder::new(BufReader::new(&b""[..])))
+    }
+
+    // A skipped field whose value is a scalar must end skip mode. Otherwise the
+    // processor stays in skip mode forever and silently drops the rest of the
+    // document. Aligns CardEventProcessor with SealedProductEventProcessor.
+    #[tokio::test]
+    async fn skip_mode_ends_on_scalar_value() {
+        let mut processor = CardEventProcessor::new(10);
+        // Simulate having just started skipping a field's value at depth 3.
+        processor.is_skipping_value = true;
+        processor.skip_depth = 3;
+        processor.json_depth = 3;
+
+        let parser = empty_parser();
+        processor
+            .process_event(JsonEvent::ValueString, &parser)
+            .await
+            .unwrap();
+
+        assert!(
+            !processor.is_skipping_value,
+            "a scalar skipped value should end skip mode, not wedge it"
+        );
+    }
+
+    /// Drive the processor over a JSON document and return the size of each
+    /// batch it flushes.
+    async fn batch_sizes(json: &str, batch_size: usize) -> Vec<usize> {
+        use crate::utils::json_stream_parser::JsonStreamParser;
+        use futures::stream;
+        use std::sync::{Arc, Mutex};
+
+        let mut parser = JsonStreamParser::new(CardEventProcessor::new(batch_size));
+        let sizes = Arc::new(Mutex::new(Vec::new()));
+        let sink = sizes.clone();
+        let bytes = bytes::Bytes::from(json.to_string());
+        let byte_stream = stream::once(async move { Ok::<_, std::io::Error>(bytes) });
+        parser
+            .parse_stream(byte_stream, move |batch| {
+                let sink = sink.clone();
+                Box::pin(async move {
+                    sink.lock().unwrap().push(batch.len());
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        Arc::try_unwrap(sizes).unwrap().into_inner().unwrap()
+    }
+
+    // A set larger than the batch size must still be delivered as one batch, so
+    // the cross-face split-card merge (applied per delivered batch downstream)
+    // sees both faces. The old code flushed mid-set at batch_size, giving [2, 1]
+    // and splitting a face pair straddling that boundary.
+    #[tokio::test]
+    async fn flushes_whole_set_as_one_batch() {
+        let json = r#"{
+            "meta": {"date": "2024-01-15"},
+            "data": {
+                "TST": {
+                    "name": "Test Set",
+                    "type": "expansion",
+                    "cards": [
+                        {"uuid":"a","name":"A","setCode":"TST","number":"1","type":"Instant","rarity":"common","identifiers":{"scryfallId":"s-a"}},
+                        {"uuid":"b","name":"B","setCode":"TST","number":"2","type":"Instant","rarity":"common","identifiers":{"scryfallId":"s-b"}},
+                        {"uuid":"c","name":"C","setCode":"TST","number":"3","type":"Instant","rarity":"common","identifiers":{"scryfallId":"s-c"}}
+                    ]
+                }
+            }
+        }"#;
+
+        assert_eq!(batch_sizes(json, 2).await, vec![3]);
     }
 }
