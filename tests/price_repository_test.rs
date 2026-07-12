@@ -158,6 +158,86 @@ async fn test_fetch_prices_for_card_ids() {
     assert!(foil.is_some());
 }
 
+async fn insert_granular_history(
+    db: &Arc<ConnectionPool>,
+    card_id: &str,
+    date: NaiveDate,
+    price: Decimal,
+) {
+    let mut qb = QueryBuilder::new(
+        "INSERT INTO granular_price_history \
+         (card_id, provider, price_type, finish, condition, date, price) ",
+    );
+    qb.push_values(
+        std::iter::once((card_id, date, price)),
+        |mut b, (id, d, p)| {
+            b.push_bind(id)
+                .push_bind("cardkingdom")
+                .push_bind("buylist")
+                .push_bind("nonfoil")
+                .push_bind("NM")
+                .push_bind(d)
+                .push_bind(p);
+        },
+    );
+    db.execute_query_builder(qb).await.unwrap();
+}
+
+async fn granular_history_dates(db: &Arc<ConnectionPool>, card_id: &str) -> Vec<NaiveDate> {
+    let mut qb = QueryBuilder::new("SELECT date FROM granular_price_history WHERE card_id = ");
+    qb.push_bind(card_id.to_string());
+    qb.push(" ORDER BY date");
+    let rows: Vec<(NaiveDate,)> = db.fetch_all_query_builder(qb).await.unwrap();
+    rows.into_iter().map(|(d,)| d).collect()
+}
+
+// granular_price_history is written daily by CK-direct and was previously never
+// pruned (S4). Retention must apply the same tiers as price_history: keep recent
+// rows, keep the 1st-of-month beyond 28 days, prune old non-1st rows.
+#[tokio::test]
+#[ignore]
+async fn test_granular_price_history_retention_prunes_old_rows() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+    let price_repo = PriceRepository::new(db.clone());
+
+    set_repo
+        .save_sets(&[common::create_test_set("p20")])
+        .await
+        .unwrap();
+    card_repo
+        .save_cards(&[common::create_test_card("p20-c1", "p20")])
+        .await
+        .unwrap();
+
+    let recent = chrono::Local::now().date_naive() - chrono::Duration::days(2); // < 7d: kept
+    let old_first = NaiveDate::from_ymd_opt(2020, 6, 1).unwrap(); // > 28d, 1st: kept
+    let old_mid = NaiveDate::from_ymd_opt(2020, 6, 15).unwrap(); // > 28d, not 1st: pruned
+
+    insert_granular_history(&db, "p20-c1", recent, Decimal::new(100, 2)).await;
+    insert_granular_history(&db, "p20-c1", old_first, Decimal::new(200, 2)).await;
+    insert_granular_history(&db, "p20-c1", old_mid, Decimal::new(300, 2)).await;
+
+    price_repo.apply_granular_weekly_retention().await.unwrap();
+    let monthly = price_repo.apply_granular_monthly_retention().await.unwrap();
+    assert!(
+        monthly >= 1,
+        "monthly retention should prune the >28d non-1st row"
+    );
+
+    let remaining = granular_history_dates(&db, "p20-c1").await;
+    assert!(remaining.contains(&recent), "recent row must be kept");
+    assert!(
+        remaining.contains(&old_first),
+        "1st-of-month row must be kept"
+    );
+    assert!(
+        !remaining.contains(&old_mid),
+        "old non-1st row must be pruned"
+    );
+}
+
 fn create_test_granular(card_id: &str, price: Decimal) -> GranularPrice {
     GranularPrice {
         card_id: card_id.to_string(),

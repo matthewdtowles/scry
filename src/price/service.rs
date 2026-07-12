@@ -256,6 +256,20 @@ impl PriceService {
         })
     }
 
+    /// Apply the same tiered retention to `granular_price_history` (CK-direct
+    /// buylist writes grow it daily without bound otherwise). Returns
+    /// `(weekly_deleted, monthly_deleted)`.
+    pub async fn apply_granular_retention(&self) -> Result<(i64, i64)> {
+        info!("Starting retention cleanup on granular_price_history");
+        let weekly = self.repository.apply_granular_weekly_retention().await?;
+        let monthly = self.repository.apply_granular_monthly_retention().await?;
+        info!(
+            "granular_price_history: weekly deleted {} rows, monthly deleted {} rows",
+            weekly, monthly
+        );
+        Ok((weekly, monthly))
+    }
+
     pub async fn truncate_history(&self) -> Result<()> {
         self.repository.truncate_price_history().await
     }

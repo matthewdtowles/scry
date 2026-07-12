@@ -505,6 +505,13 @@ ONE-TIME SETUP
         info!("Monthly period: deleted {} rows", result.monthly_deleted);
         info!("Total deleted: {}", result.total_deleted);
 
+        info!("Starting granular price history retention cleanup");
+        let (gph_weekly, gph_monthly) = self.price_service.apply_granular_retention().await?;
+        info!(
+            "Granular price history: weekly deleted {} rows, monthly deleted {} rows",
+            gph_weekly, gph_monthly
+        );
+
         info!("Starting set price history retention cleanup");
         let (weekly, monthly) = self.set_service.apply_set_price_history_retention().await?;
         info!(
