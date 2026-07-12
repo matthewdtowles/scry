@@ -7,6 +7,22 @@ use dialoguer::{theme::ColorfulTheme, Confirm, Select};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
+/// Prompt the user to confirm a destructive operation.
+///
+/// In a non-interactive session (cron/Docker, no TTY — how this tool runs in
+/// production), `dialoguer` returns `Err` because it can't read a response.
+/// Treat that as "not confirmed" and refuse, rather than `.unwrap()`-panicking
+/// with a backtrace.
+fn confirm_destructive(prompt: &str) -> bool {
+    match Confirm::new().with_prompt(prompt).default(false).interact() {
+        Ok(confirmed) => confirmed,
+        Err(_) => {
+            warn!("Non-interactive session: refusing destructive operation without confirmation.");
+            false
+        }
+    }
+}
+
 pub struct CliController {
     card_service: crate::card::service::CardService,
     set_service: crate::set::service::SetService,
@@ -510,11 +526,9 @@ ONE-TIME SETUP
         let size = self.price_service.fetch_history_size().await?;
         info!("Current price_history: {} rows, {}", count, size);
 
-        let confirmed = Confirm::new()
-            .with_prompt("This will DELETE ALL DATA from price_history. Type 'y' to confirm")
-            .default(false)
-            .interact()
-            .unwrap();
+        let confirmed = confirm_destructive(
+            "This will DELETE ALL DATA from price_history. Type 'y' to confirm",
+        );
 
         if !confirmed {
             warn!("Aborted. No data was deleted.");
@@ -537,13 +551,9 @@ ONE-TIME SETUP
         );
 
         if truncate {
-            let confirmed = Confirm::new()
-                .with_prompt(
-                    "This will TRUNCATE price_history before backfill. Type 'y' to confirm",
-                )
-                .default(false)
-                .interact()
-                .unwrap();
+            let confirmed = confirm_destructive(
+                "This will TRUNCATE price_history before backfill. Type 'y' to confirm",
+            );
             if !confirmed {
                 warn!("Aborted backfill.");
                 return Ok(());
@@ -721,11 +731,9 @@ ONE-TIME SETUP
     }
 
     async fn reset_data(&self) -> Result<()> {
-        let confirmed = Confirm::new()
-            .with_prompt("This will DELETE all MTG data before ingesting. Do you want to proceed?")
-            .default(false)
-            .interact()
-            .unwrap();
+        let confirmed = confirm_destructive(
+            "This will DELETE all MTG data before ingesting. Do you want to proceed?",
+        );
         if !confirmed {
             warn!("Skipped data reset.");
             return Ok(());

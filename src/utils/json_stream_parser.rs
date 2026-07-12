@@ -28,6 +28,17 @@ pub(crate) trait JsonEventProcessor<T> {
     fn take_batch(&mut self) -> Vec<T>;
 }
 
+/// The outcome of pulling one event from the underlying parser.
+enum NextEvent {
+    /// A JSON event ready to be processed.
+    Event(JsonEvent),
+    /// End of the JSON document.
+    End,
+    /// A recoverable parser (tokenizer) error. The stream tolerates a bounded
+    /// number of these before aborting.
+    ParserError(String),
+}
+
 impl<T, P> JsonStreamParser<T, P>
 where
     P: JsonEventProcessor<T>,
@@ -39,9 +50,10 @@ where
         }
     }
 
-    pub async fn parse_stream<'a, S, F>(&mut self, byte_stream: S, mut on_batch: F) -> Result<()>
+    pub async fn parse_stream<'a, S, E, F>(&mut self, byte_stream: S, mut on_batch: F) -> Result<()>
     where
-        S: futures::Stream<Item = Result<Bytes, reqwest::Error>>,
+        S: futures::Stream<Item = Result<Bytes, E>>,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
         F: FnMut(Vec<T>) -> futures::future::BoxFuture<'a, Result<()>>,
     {
         let stream_reader =
@@ -54,9 +66,9 @@ where
         let mut parser = JsonParser::new(feeder);
         let mut error_count = 0;
         loop {
-            let event_result = self.get_next_event(&mut parser).await;
+            let next_event = self.get_next_event(&mut parser).await?;
             let should_continue = self
-                .handle_parse_event(event_result, &parser, &mut on_batch, &mut error_count)
+                .handle_parse_event(next_event, &parser, &mut on_batch, &mut error_count)
                 .await?;
             if !should_continue {
                 return Ok(());
@@ -64,42 +76,37 @@ where
         }
     }
 
+    /// Pull the next event from the parser, filling the feeder as needed.
+    ///
+    /// Fills until the parser produces a real event or reaches end of input,
+    /// rather than a fixed number of attempts. A feeder IO error (e.g. the
+    /// connection dropping mid-download) is propagated as a hard failure. The
+    /// old code swallowed it, ran on to EOF, and then aborted with a misleading
+    /// "parser error" that hid the real network failure.
     async fn get_next_event<R: tokio::io::AsyncRead + Unpin>(
         &self,
         parser: &mut JsonParser<AsyncBufReaderJsonFeeder<R>>,
-    ) -> Result<Option<JsonEvent>, String> {
-        // Return Result to handle errors
+    ) -> Result<NextEvent> {
         let mut event_result = parser.next_event();
-
-        if let Ok(Some(JsonEvent::NeedMoreInput)) = event_result {
-            let mut fill_attempts = 0;
-            loop {
-                match parser.feeder.fill_buf().await {
-                    Ok(()) => {
-                        fill_attempts += 1;
-                        if fill_attempts >= 3 {
-                            break;
-                        }
-                        continue;
-                    }
-                    Err(e) => {
-                        if fill_attempts == 0 {
-                            error!("Failed to fill buffer: {}", e);
-                        }
-                        break;
-                    }
-                }
-            }
+        while let Ok(Some(JsonEvent::NeedMoreInput)) = event_result {
+            parser
+                .feeder
+                .fill_buf()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read from stream: {}", e))?;
             event_result = parser.next_event();
         }
 
-        // Convert ParserError to String for easier handling
-        event_result.map_err(|e| format!("Parser error: {}", e))
+        match event_result {
+            Ok(Some(event)) => Ok(NextEvent::Event(event)),
+            Ok(None) => Ok(NextEvent::End),
+            Err(e) => Ok(NextEvent::ParserError(format!("Parser error: {}", e))),
+        }
     }
 
     async fn handle_parse_event<'a, R, F>(
         &mut self,
-        event_result: Result<Option<JsonEvent>, String>, // Handle the Result
+        next_event: NextEvent,
         parser: &JsonParser<AsyncBufReaderJsonFeeder<R>>,
         on_batch: &mut F,
         error_count: &mut usize,
@@ -108,23 +115,19 @@ where
         R: tokio::io::AsyncRead + Unpin,
         F: FnMut(Vec<T>) -> futures::future::BoxFuture<'a, Result<()>>,
     {
-        match event_result {
-            Ok(Some(event)) => match event {
-                JsonEvent::NeedMoreInput => Ok(true),
-                _ => {
-                    *error_count = 0;
-                    let processed_count = self.event_processor.process_event(event, parser).await?;
-                    if processed_count > 0 {
-                        let batch = self.event_processor.take_batch();
-                        if !batch.is_empty() {
-                            on_batch(batch).await?;
-                        }
+        match next_event {
+            NextEvent::Event(event) => {
+                *error_count = 0;
+                let processed_count = self.event_processor.process_event(event, parser).await?;
+                if processed_count > 0 {
+                    let batch = self.event_processor.take_batch();
+                    if !batch.is_empty() {
+                        on_batch(batch).await?;
                     }
-                    Ok(true)
                 }
-            },
-            Ok(None) => {
-                // End of document (what used to be Eof)
+                Ok(true)
+            }
+            NextEvent::End => {
                 let remaining = self.event_processor.take_batch();
                 if !remaining.is_empty() {
                     debug!("Processing final batch of {} length", remaining.len());
@@ -132,8 +135,7 @@ where
                 }
                 Ok(false)
             }
-            Err(error_msg) => {
-                // Handle parser errors (what used to be JsonEvent::Error)
+            NextEvent::ParserError(error_msg) => {
                 warn!("JSON parser error: {}", error_msg);
                 *error_count += 1;
                 if *error_count > 10 {
@@ -146,5 +148,81 @@ where
                 Ok(true)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream;
+    use std::io;
+    use std::time::Duration;
+
+    /// Minimal processor that ignores every event and never emits a batch.
+    struct NoopProcessor;
+
+    impl JsonEventProcessor<()> for NoopProcessor {
+        async fn process_event<R: tokio::io::AsyncRead + Unpin>(
+            &mut self,
+            _event: JsonEvent,
+            _parser: &JsonParser<AsyncBufReaderJsonFeeder<R>>,
+        ) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn take_batch(&mut self) -> Vec<()> {
+            Vec::new()
+        }
+    }
+
+    // A mid-stream IO failure (e.g. the connection dropping during a large
+    // download) must surface as the actual read error. The old code swallowed
+    // the feeder IO error, ran on to EOF, and reported a misleading parser
+    // error instead — so assert on the message, not just that it failed.
+    // Wrapped in a timeout as insurance against a busy-loop regression.
+    #[tokio::test]
+    async fn surfaces_stream_io_failure() {
+        let byte_stream = stream::iter(vec![
+            Ok(Bytes::from_static(b"{\"data\": {")),
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "connection dropped mid-download",
+            )),
+        ]);
+        let mut parser = JsonStreamParser::new(NoopProcessor);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            parser.parse_stream(byte_stream, |_batch| Box::pin(async { Ok(()) })),
+        )
+        .await
+        .expect("parse_stream hung on a failing stream (busy-loop regression)");
+
+        let err = result.expect_err("expected a hard error when the stream fails mid-download");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Failed to read from stream"),
+            "error should report the underlying read failure, got: {msg}"
+        );
+    }
+
+    // A well-formed document delivered across multiple chunks still parses to
+    // completion after the fill-loop change.
+    #[tokio::test]
+    async fn completes_on_well_formed_chunked_stream() {
+        let byte_stream = stream::iter(vec![
+            Ok::<_, io::Error>(Bytes::from_static(b"[1, 2,")),
+            Ok(Bytes::from_static(b" 3]")),
+        ]);
+        let mut parser = JsonStreamParser::new(NoopProcessor);
+
+        let result = parser
+            .parse_stream(byte_stream, |_batch| Box::pin(async { Ok(()) }))
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "well-formed JSON should parse cleanly: {result:?}"
+        );
     }
 }
