@@ -134,9 +134,12 @@ impl CardService {
                     }
                 }
                 batch_owned = CardService::merge_and_filter_cards(batch_owned);
-                if !batch_owned.is_empty() {
-                    repo.save_cards(&batch_owned).await?;
-                    repo.save_legalities(&batch_owned).await?;
+                // A batch is now a whole set (flush-on-set-boundary, so the
+                // split-card merge above sees both faces). Chunk the DB writes
+                // so a large set can't exceed Postgres's bind-parameter limit.
+                for chunk in batch_owned.chunks(CardService::BATCH_SIZE) {
+                    repo.save_cards(chunk).await?;
+                    repo.save_legalities(chunk).await?;
                 }
                 Ok::<(), anyhow::Error>(())
             });

@@ -2,6 +2,7 @@ use crate::price::domain::Price;
 use anyhow::Result;
 use chrono::NaiveDate;
 use rust_decimal::{prelude::FromPrimitive, Decimal};
+use tracing::warn;
 
 /// Accumulates prices from multiple providers to calculate averages
 ///
@@ -55,13 +56,23 @@ impl PriceAccumulator {
         }
     }
 
-    /// Convert accumulated data into a Price entity
+    /// Convert accumulated data into a Price entity.
+    ///
+    /// Returns an error (which callers skip) when no valid provider date was
+    /// accumulated, rather than dating the row `1970-01-01` — epoch rows poison
+    /// `clean_up_prices` and `price_history` retention.
     pub fn into_price(self, card_id: String) -> Result<Price> {
-        let date = self
+        let Some(date) = self
             .date
-            .as_ref()
+            .as_deref()
             .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-            .unwrap_or_else(|| NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+        else {
+            warn!(
+                "Skipping price for card {}: missing or unparseable date {:?}",
+                card_id, self.date
+            );
+            return Err(anyhow::anyhow!("no valid price date for card {card_id}"));
+        };
         let foil = self.average_foil().and_then(Decimal::from_f64);
         let normal = self.average_normal().and_then(Decimal::from_f64);
         Price::new(card_id, foil, normal, date)
@@ -119,5 +130,21 @@ mod tests {
         let acc = PriceAccumulator::new();
         let result = acc.into_price("card-123".to_string());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_into_price_missing_date_skips() {
+        // Has a price but no provider date — must not fall back to epoch.
+        let mut acc = PriceAccumulator::new();
+        acc.add_normal(5.0);
+        assert!(acc.into_price("card-123".to_string()).is_err());
+    }
+
+    #[test]
+    fn test_into_price_unparseable_date_skips() {
+        let mut acc = PriceAccumulator::new();
+        acc.add_normal(5.0);
+        acc.set_date("not-a-date".to_string());
+        assert!(acc.into_price("card-123".to_string()).is_err());
     }
 }

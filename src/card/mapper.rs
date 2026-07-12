@@ -2,6 +2,7 @@ use crate::card::domain::{Card, CardRarity, Format, Legality, LegalityStatus, Ma
 use crate::utils::json;
 use anyhow::Result;
 use serde_json::Value;
+use tracing::warn;
 
 pub struct CardMapper;
 
@@ -20,15 +21,26 @@ impl CardMapper {
             .and_then(|c| c.as_array())
             .ok_or_else(|| anyhow::anyhow!("Invalid MTG JSON set structure"))?;
 
-        cards_array
+        // Warn-and-skip per card, matching the streaming ingest path
+        // (event_processor). A single unmappable card (e.g. missing
+        // scryfallId) must not abort the whole `ingest -k <set>` run.
+        Ok(cards_array
             .iter()
             .filter(|c| {
                 !c.get("isOnlineOnly")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
             })
-            .map(|card_data| Self::map_json_to_card(card_data, &set_type))
-            .collect()
+            .filter_map(
+                |card_data| match Self::map_json_to_card(card_data, &set_type) {
+                    Ok(card) => Some(card),
+                    Err(e) => {
+                        warn!("Skipping unparseable card in set-cards ingest: {}", e);
+                        None
+                    }
+                },
+            )
+            .collect())
     }
 
     pub fn map_json_to_card(card_data: &Value, set_type: &str) -> Result<Card> {
@@ -39,9 +51,13 @@ impl CardMapper {
         let number_str = json::extract_string(card_data, "number")?;
         let type_line = json::extract_string(card_data, "type")?;
         let rarity_str = json::extract_string(card_data, "rarity")?;
-        let rarity = rarity_str
-            .parse::<CardRarity>()
-            .unwrap_or(CardRarity::Common);
+        let rarity = rarity_str.parse::<CardRarity>().unwrap_or_else(|_| {
+            warn!(
+                "Unknown card rarity '{}' for card {}; defaulting to common",
+                rarity_str, id
+            );
+            CardRarity::Common
+        });
 
         let raw_mana_cost = json::extract_optional_string(card_data, "manaCost");
         let mana_cost = Card::normalize_mana_cost(raw_mana_cost);
@@ -307,6 +323,38 @@ mod tests {
         let mut json = create_valid_card_json();
         json.as_object_mut().unwrap().remove("uuid");
         assert!(CardMapper::map_json_to_card(&json, "expansion").is_err());
+    }
+
+    #[test]
+    fn test_unknown_rarity_defaults_to_common() {
+        let mut json = create_valid_card_json();
+        json["rarity"] = json!("mythic_secret_lair"); // a rarity we don't model
+        let card = CardMapper::map_json_to_card(&json, "expansion").unwrap();
+        assert_eq!(card.rarity, CardRarity::Common);
+    }
+
+    #[test]
+    fn test_map_to_cards_skips_unparseable_card() {
+        // One card is missing scryfallId (unmappable); the other is valid.
+        // The whole set-cards ingest must not abort — the good card survives.
+        let mut bad_card = create_valid_card_json();
+        bad_card["uuid"] = json!("bad-0000-0000-0000-000000000000");
+        bad_card["name"] = json!("Broken Card");
+        bad_card["identifiers"]
+            .as_object_mut()
+            .unwrap()
+            .remove("scryfallId");
+
+        let set_data = json!({
+            "data": {
+                "type": "expansion",
+                "cards": [bad_card, create_valid_card_json()]
+            }
+        });
+
+        let cards = CardMapper::map_to_cards(set_data).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].name, "Lightning Bolt");
     }
 
     #[test]
