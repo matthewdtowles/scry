@@ -1,6 +1,7 @@
 use crate::database::ConnectionPool;
 use crate::portfolio::domain::PortfolioValueSnapshot;
 use crate::portfolio::repository::PortfolioRepository;
+use crate::utils::clock;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -26,7 +27,7 @@ impl PortfolioService {
             return Ok(0);
         }
 
-        let today = chrono::Local::now().date_naive();
+        let today = clock::today();
         let mut snapshots: Vec<PortfolioValueSnapshot> = summaries
             .iter()
             .map(|s| PortfolioValueSnapshot {

@@ -1934,6 +1934,7 @@ dependencies = [
  "dialoguer",
  "dotenvy",
  "futures",
+ "percent-encoding",
  "reqwest",
  "rust_decimal",
  "serde",

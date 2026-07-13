@@ -1,22 +1,17 @@
-use crate::price::domain::{CardPrices, GranularPrice, Price, PriceAccumulator};
-use crate::price::{AVERAGE_PROVIDERS, GRANULAR_PROVIDERS};
+use crate::price::domain::{CardPrices, Price, PriceAccumulator};
+use crate::price::AVERAGE_PROVIDERS;
 use crate::utils::json_stream_parser::JsonEventProcessor;
 use actson::tokio::AsyncBufReaderJsonFeeder;
 use actson::{JsonEvent, JsonParser};
 use anyhow::Result;
-use chrono::NaiveDate;
-use rust_decimal::Decimal;
 
-/// Streams MTGJSON `AllPricesToday` and, per card, emits:
-/// - one `GranularPrice` row per (provider, retail|buylist, finish, date), and
-/// - the derived averaged retail price (`PriceAccumulator`) for the `price` table.
-///
-/// The average is retail-only across `AVERAGE_PROVIDERS`, exactly as before, so
-/// the existing `price`/`price_history` tables are unchanged while the granular
-/// store fills. Buylist and per-provider retail are captured only in granular.
+/// Streams MTGJSON `AllPricesToday` and emits, per card, the derived averaged
+/// retail price (`PriceAccumulator`) for the `price` table. The average is
+/// retail-only across `AVERAGE_PROVIDERS`. Buylist and per-provider retail are
+/// no longer captured here — the granular store is CK-direct-only (ROADMAP
+/// 10.10).
 pub struct PriceEventProcessor {
     accumulator: Option<PriceAccumulator>,
-    current_granular: Vec<GranularPrice>,
     batch: Vec<CardPrices>,
     batch_size: usize,
     current_card_uuid: Option<String>,
@@ -74,7 +69,6 @@ impl PriceEventProcessor {
     pub fn new(batch_size: usize) -> Self {
         Self {
             accumulator: None,
-            current_granular: Vec::new(),
             batch: Vec::with_capacity(batch_size),
             batch_size,
             current_card_uuid: None,
@@ -92,15 +86,14 @@ impl PriceEventProcessor {
     fn handle_end_object(&mut self) -> Result<usize> {
         if self.in_data_object && self.json_depth == 3 {
             if let Some(card_uuid) = self.current_card_uuid.take() {
-                let granular = std::mem::take(&mut self.current_granular);
                 let averages: Vec<Price> = self
                     .accumulator
                     .take()
                     .and_then(|acc| acc.into_price(card_uuid).ok())
                     .into_iter()
                     .collect();
-                if !averages.is_empty() || !granular.is_empty() {
-                    self.batch.push(CardPrices { averages, granular });
+                if !averages.is_empty() {
+                    self.batch.push(CardPrices { averages });
                 }
             }
             let processed = if self.batch.len() >= self.batch_size {
@@ -127,7 +120,6 @@ impl PriceEventProcessor {
         } else if self.in_price_object() {
             self.current_card_uuid = Some(field_name.clone());
             self.accumulator = Some(PriceAccumulator::new());
-            self.current_granular = Vec::new();
         }
         self.path.push(field_name);
         Ok(0)
@@ -140,14 +132,8 @@ impl PriceEventProcessor {
             let finish = self.path[5].clone();
             let date_str = self.path[6].clone();
 
-            // Granular capture: broad provider set, retail + buylist.
-            if GRANULAR_PROVIDERS.contains(&provider.as_str()) {
-                self.record_granular(&provider, &price_type, &finish, &date_str, &value);
-            }
-
             // Derived average: original providers, retail only, foil+etched fold
-            // into foil, so the `price` table is identical to the pre-granular
-            // behavior.
+            // into foil.
             if price_type == "retail" && AVERAGE_PROVIDERS.contains(&provider.as_str()) {
                 if let (Some(acc), Ok(price)) = (self.accumulator.as_mut(), value.parse::<f64>()) {
                     if finish == "foil" || finish == "etched" {
@@ -173,34 +159,6 @@ impl PriceEventProcessor {
             && (self.path[5] == "normal" || self.path[5] == "foil" || self.path[5] == "etched")
     }
 
-    fn record_granular(
-        &mut self,
-        provider: &str,
-        price_type: &str,
-        finish: &str,
-        date_str: &str,
-        value: &str,
-    ) {
-        let (Some(card_uuid), Ok(price), Ok(date)) = (
-            self.current_card_uuid.clone(),
-            value.parse::<Decimal>(),
-            NaiveDate::parse_from_str(date_str, "%Y-%m-%d"),
-        ) else {
-            return;
-        };
-        if let Ok(gp) = GranularPrice::new(
-            card_uuid,
-            provider.to_string(),
-            price_type.to_string(),
-            finish.to_string(),
-            GranularPrice::DEFAULT_CONDITION.to_string(),
-            date,
-            price,
-        ) {
-            self.current_granular.push(gp);
-        }
-    }
-
     fn in_price_object(&self) -> bool {
         self.in_data_object && self.json_depth == 2
     }
@@ -211,6 +169,7 @@ mod tests {
     use super::*;
     use crate::utils::json_stream_parser::JsonStreamParser;
     use futures::stream;
+    use rust_decimal::Decimal;
 
     /// Drive the processor over a JSON document and collect all emitted cards.
     async fn run(json: &str) -> Vec<CardPrices> {
@@ -262,27 +221,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn emits_granular_for_retail_and_buylist_all_providers() {
-        let cards = run(sample_json()).await;
-        assert_eq!(cards.len(), 1);
-        let g = &cards[0].granular;
-        // tcgplayer retail normal+foil, cardkingdom retail normal + buylist normal
-        // = 4 rows. cardsphere is in the sample feed but is not a tracked provider
-        // (ROADMAP 6.9: absent upstream, dropped), so its buylist row is dropped.
-        assert_eq!(g.len(), 4);
-        assert!(g.iter().all(|r| r.provider != "cardsphere"));
-
-        let buylist: Vec<_> = g.iter().filter(|r| r.price_type == "buylist").collect();
-        assert_eq!(buylist.len(), 1);
-        assert!(buylist
-            .iter()
-            .all(|r| r.condition == "NM" && r.finish == "normal"));
-        assert!(buylist
-            .iter()
-            .any(|r| r.provider == "cardkingdom" && r.price == Decimal::new(350, 2)));
-    }
-
-    #[tokio::test]
     async fn derived_average_is_retail_only_unchanged() {
         let cards = run(sample_json()).await;
         assert_eq!(cards[0].averages.len(), 1);
@@ -297,7 +235,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn granular_captures_manapool_excludes_cardmarket_average_uses_neither() {
+    async fn average_uses_only_average_providers() {
         let json = r#"{
           "data": {
             "card-uuid-1": {
@@ -310,12 +248,6 @@ mod tests {
           }
         }"#;
         let cards = run(json).await;
-        let g = &cards[0].granular;
-        // manapool captured, cardmarket not
-        assert!(g
-            .iter()
-            .any(|r| r.provider == "manapool" && r.price == Decimal::from(6)));
-        assert!(g.iter().all(|r| r.provider != "cardmarket"));
         // average uses only AVERAGE_PROVIDERS (tcgplayer here) = 4.00, not manapool/cardmarket
         let avg = cards[0].averages.first().expect("expected an average");
         assert_eq!(avg.normal, Some(Decimal::from(4)));

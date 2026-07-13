@@ -116,7 +116,7 @@ impl PortfolioRepository {
                 COUNT(DISTINCT i.card_id)::int AS total_cards,
                 COALESCE(SUM(i.quantity), 0)::int AS total_quantity
             FROM inventory i
-            JOIN price p ON p.card_id = i.card_id
+            LEFT JOIN price p ON p.card_id = i.card_id
             GROUP BY i.user_id",
         );
         self.db.fetch_all_query_builder(qb).await

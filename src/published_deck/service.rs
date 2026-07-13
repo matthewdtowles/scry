@@ -2,8 +2,9 @@ use crate::database::ConnectionPool;
 use crate::published_deck::domain::{RawDeck, ResolvedCard};
 use crate::published_deck::repository::PublishedDeckRepository;
 use crate::published_deck::source::{DecklistSource, FbettegaSource};
+use crate::utils::clock;
 use anyhow::Result;
-use chrono::{Duration, Utc};
+use chrono::Duration;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -59,7 +60,7 @@ impl PublishedDeckService {
             }
         }
 
-        let cutoff = Utc::now().date_naive() - Duration::days(RETENTION_DAYS);
+        let cutoff = clock::today() - Duration::days(RETENTION_DAYS);
         let pruned = self.repository.prune_older_than(cutoff).await?;
 
         info!(

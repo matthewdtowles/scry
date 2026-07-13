@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     );
 
     if let Err(e) = cli_controller.handle_command(cli.command).await {
-        eprint!("Error: {e}");
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
     info!("* * * * * * * * * * * * *");

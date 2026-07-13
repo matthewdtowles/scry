@@ -13,14 +13,13 @@ use crate::{
     },
     utils::{HttpClient, JsonStreamParser},
 };
-use anyhow::{Context, Result};
-use futures::future::BoxFuture;
+use anyhow::Result;
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 pub struct CardService {
@@ -31,7 +30,6 @@ pub struct CardService {
 
 impl CardService {
     const BATCH_SIZE: usize = 500;
-    const CONCURRENCY: usize = 6;
 
     pub fn new(
         db: Arc<ConnectionPool>,
@@ -70,8 +68,9 @@ impl CardService {
             return Ok(0);
         }
         let count = self.repository.save_cards(&final_cards).await?;
-        let _ = self.repository.save_legalities(&final_cards).await?;
-        debug!("Successfully ingested {} cards for set {}", count, set_code);
+        self.repository.save_legalities(&final_cards).await?;
+        // Conditional upsert, so `count` is rows changed, not cards seen.
+        debug!("Cards ingest for set {}: {} rows changed", set_code, count);
         Ok(count)
     }
 
@@ -79,76 +78,39 @@ impl CardService {
         debug!("Start ingestion of all cards");
         let byte_stream = self.client.all_cards_stream().await?;
         debug!("Received byte stream for all cards");
-        let existing_set_cache: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-        let sem = Arc::new(Semaphore::new(Self::CONCURRENCY));
         let event_processor = CardEventProcessor::new(Self::BATCH_SIZE);
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         let repo = self.repository.clone();
         json_stream_parser
             .parse_stream(byte_stream, move |batch| {
-                Self::save_card_batch(repo.clone(), sem.clone(), existing_set_cache.clone(), batch)
+                let repo = repo.clone();
+                Box::pin(async move { Self::save_card_batch(&repo, batch).await })
             })
             .await?;
         Ok(())
     }
 
-    /// Persist one parsed card batch: skip cards for sets not yet in the DB
-    /// (cached set-existence check), merge/filter, then save cards +
-    /// legalities. Bounded by `sem` and run on a spawned task so batches save
-    /// concurrently. Shared by [`Self::ingest_all`] and
-    /// [`Self::ingest_all_with_sealed`].
-    fn save_card_batch(
-        repo: CardRepository,
-        sem: Arc<Semaphore>,
-        cache: Arc<Mutex<HashSet<String>>>,
-        batch: Vec<Card>,
-    ) -> BoxFuture<'static, Result<()>> {
-        Box::pin(async move {
-            if batch.is_empty() {
-                return Ok(());
-            }
-            let permit = sem
-                .clone()
-                .acquire_owned()
-                .await
-                .context("semaphore closed while acquiring card ingest permit")?;
-            let mut batch_owned = batch;
-            let handle = tokio::spawn(async move {
-                let _permit_guard = permit;
-                let set_code = batch_owned[0].set_code.clone();
-                {
-                    let cache_lock = cache.lock().await;
-                    if !cache_lock.contains(&set_code) {
-                        drop(cache_lock);
-                        match repo.set_exists(&set_code).await {
-                            Ok(true) => {
-                                let mut cache_lock = cache.lock().await;
-                                cache_lock.insert(set_code.clone());
-                            }
-                            Ok(false) => {
-                                warn!("Skipping cards for missing set {}", set_code);
-                                return Ok::<(), anyhow::Error>(());
-                            }
-                            Err(e) => return Err::<(), anyhow::Error>(e),
-                        }
-                    }
-                }
-                batch_owned = CardService::merge_and_filter_cards(batch_owned);
-                // A batch is now a whole set (flush-on-set-boundary, so the
-                // split-card merge above sees both faces). Chunk the DB writes
-                // so a large set can't exceed Postgres's bind-parameter limit.
-                for chunk in batch_owned.chunks(CardService::BATCH_SIZE) {
-                    repo.save_cards(chunk).await?;
-                    repo.save_legalities(chunk).await?;
-                }
-                Ok::<(), anyhow::Error>(())
-            });
-            match handle.await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err(e),
-                Err(join_err) => Err(anyhow::anyhow!("Task join error: {}", join_err)),
-            }
-        })
+    /// Persist one parsed card batch. A batch is a whole set
+    /// (flush-on-set-boundary, so the split-card merge sees both faces): skip it
+    /// if the set isn't in the DB yet, merge/filter, then save cards +
+    /// legalities in bind-parameter-safe chunks. The stream parser hands batches
+    /// to us one at a time, so this runs sequentially. Shared by
+    /// [`Self::ingest_all`] and [`Self::ingest_all_with_sealed`].
+    async fn save_card_batch(repo: &CardRepository, batch: Vec<Card>) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let set_code = batch[0].set_code.clone();
+        if !repo.set_exists(&set_code).await? {
+            warn!("Skipping cards for missing set {}", set_code);
+            return Ok(());
+        }
+        let batch = Self::merge_and_filter_cards(batch);
+        for chunk in batch.chunks(Self::BATCH_SIZE) {
+            repo.save_cards(chunk).await?;
+            repo.save_legalities(chunk).await?;
+        }
+        Ok(())
     }
 
     /// Single-pass sibling of [`Self::ingest_all`]: ingests cards **and** sealed
@@ -165,8 +127,6 @@ impl CardService {
         debug!("Start single-pass ingestion of cards + sealed products");
         let valid_set_codes = Arc::new(valid_set_codes);
         let byte_stream = self.client.all_cards_stream().await?;
-        let existing_set_cache: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-        let sem = Arc::new(Semaphore::new(Self::CONCURRENCY));
         let event_processor =
             CardSealedEventProcessor::new(Self::BATCH_SIZE, SealedProductService::BATCH_SIZE);
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
@@ -176,8 +136,6 @@ impl CardService {
         json_stream_parser
             .parse_stream(byte_stream, move |batch| {
                 let repo = repo.clone();
-                let sem = sem.clone();
-                let cache = existing_set_cache.clone();
                 let sealed_repo = sealed_repo.clone();
                 let valid_set_codes = valid_set_codes.clone();
                 let sealed_total = sealed_total_for_closure.clone();
@@ -193,7 +151,7 @@ impl CardService {
                         }
                     }
                     if !cards.is_empty() {
-                        Self::save_card_batch(repo, sem, cache, cards).await?;
+                        Self::save_card_batch(&repo, cards).await?;
                     }
                     if !sealed.is_empty() {
                         let set_code = sealed[0].set_code.clone();
@@ -231,26 +189,19 @@ impl CardService {
     pub async fn cleanup_cards(&self, batch_size: i64) -> Result<u64> {
         debug!("Starting streaming cleanup");
         let byte_stream = self.client.all_cards_stream().await?;
-        let sem = Arc::new(Semaphore::new(Self::CONCURRENCY));
         let event_processor = CardEventProcessor::new(Self::BATCH_SIZE);
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         let repo = self.repository.clone();
-        let total = Arc::new(tokio::sync::Mutex::new(0u64));
+        let total = Arc::new(Mutex::new(0u64));
         let total_for_closure = total.clone();
         json_stream_parser
             .parse_stream(byte_stream, move |batch| {
                 let repo = repo.clone();
-                let sem = sem.clone();
                 let total = total_for_closure.clone();
                 Box::pin(async move {
                     if batch.is_empty() {
                         return Ok(());
                     }
-                    let _permit = sem
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .context("semaphore closed while acquiring card cleanup permit")?;
                     let mut ids_to_delete: Vec<String> = Vec::new();
                     for c in batch.iter() {
                         if c.should_filter() {

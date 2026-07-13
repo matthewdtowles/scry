@@ -21,6 +21,7 @@ chrono-tz = "0.8"
 dialoguer = "0.11.0"
 dotenvy = "0.15"
 futures = "0.3.31"
+percent-encoding = "2.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 rust_decimal = { version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }

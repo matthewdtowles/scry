@@ -47,7 +47,10 @@ impl SetService {
             return Ok(0);
         }
         let count = self.repository.save_sets(&to_save).await?;
-        debug!("Successfully ingested {} sets", count);
+        // Conditional upsert (DO UPDATE ... WHERE IS DISTINCT FROM), so this is
+        // rows actually changed, not the number of sets seen - unchanged rows
+        // are excluded and the count under-reports on a repeat ingest.
+        debug!("Sets ingest: {} rows changed", count);
         Ok(count)
     }
 
