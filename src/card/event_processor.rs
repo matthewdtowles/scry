@@ -72,7 +72,7 @@ impl JsonEventProcessor<Card> for CardEventProcessor {
             JsonEvent::FieldName => self.handle_field_name(parser),
             JsonEvent::ValueString => {
                 let value = parser.current_str().unwrap_or_default();
-                self.handle_string_value(&value)
+                self.handle_string_value(value)
             }
             JsonEvent::ValueInt => {
                 let value = parser.current_int::<i64>()?.to_string();
@@ -227,7 +227,7 @@ impl CardEventProcessor {
                     self.current_card_json.push(',');
                 }
                 self.current_card_json.push('"');
-                self.current_card_json.push_str(&field_name);
+                self.current_card_json.push_str(field_name);
                 self.current_card_json.push('"');
                 self.current_card_json.push(':');
             }

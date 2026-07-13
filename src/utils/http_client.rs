@@ -11,6 +11,12 @@ pub struct HttpClient {
     client: Client,
 }
 
+impl Default for HttpClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HttpClient {
     const BASE_INGESTION_URL: &str = "https://mtgjson.com/api/v5/";
     const ALL_CARDS_URL: &str = "AllPrintings.json";

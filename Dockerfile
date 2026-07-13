@@ -5,7 +5,7 @@ RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
 
 # Development stage
 FROM base AS development
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build
 CMD ["cargo", "run"]
@@ -23,8 +23,12 @@ RUN [ -z "$APP_VERSION" ] || sed -i "/^\[package\]/,/^\[/s/^version = .*/version
 RUN cargo build --release
 
 # Production stage
-FROM alpine:latest AS production
-RUN apk add --no-cache ca-certificates
+# Pin the base (not `latest`) for reproducible builds, and run as a non-root
+# user - the binary only needs to read its config and reach the DB/network.
+FROM alpine:3.21 AS production
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -H scry
 WORKDIR /app
 COPY --from=build /app/target/release/scry ./scry
+USER scry
 CMD ["./scry"]

@@ -56,10 +56,9 @@ where
         E: Into<Box<dyn std::error::Error + Send + Sync>>,
         F: FnMut(Vec<T>) -> futures::future::BoxFuture<'a, Result<()>>,
     {
-        let stream_reader =
-            StreamReader::new(byte_stream.map(|result| {
-                result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-            }));
+        let stream_reader = StreamReader::new(
+            byte_stream.map(|result| result.map_err(|e| std::io::Error::other(e))),
+        );
         let mut pinned_stream_reader = Box::pin(stream_reader);
         let buf_reader = BufReader::with_capacity(BUF_READER_SIZE, pinned_stream_reader.as_mut());
         let feeder = AsyncBufReaderJsonFeeder::new(buf_reader);

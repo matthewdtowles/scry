@@ -304,8 +304,7 @@ impl CliController {
 
     fn print_help() {
         println!(
-            "{}",
-            r#"
+            "
 Scry Interactive Mode — Help
 ============================
 
@@ -340,7 +339,7 @@ ONE-TIME SETUP
                            One-time operation for new environments.
   Backfill Set Price       Derive set_price_history from existing
   History                  price_history. One-time operation.
-"#
+"
         );
     }
 

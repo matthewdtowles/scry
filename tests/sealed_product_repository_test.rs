@@ -111,7 +111,7 @@ async fn test_save_sealed_products_upsert_no_change_is_noop() {
     let repo = SealedProductRepository::new(db);
 
     let product = create_test_product("sp03-p1", "sp03");
-    repo.save(&[product.clone()]).await.unwrap();
+    repo.save(std::slice::from_ref(&product)).await.unwrap();
 
     // Re-saving identical row matches the WHERE DISTINCT FROM guard → 0 rows affected
     let saved = repo.save(&[product]).await.unwrap();

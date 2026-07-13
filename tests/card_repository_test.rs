@@ -72,7 +72,10 @@ async fn test_save_legalities() {
         .unwrap();
 
     let card = common::create_test_card("c03-1", "c03");
-    card_repo.save_cards(&[card.clone()]).await.unwrap();
+    card_repo
+        .save_cards(std::slice::from_ref(&card))
+        .await
+        .unwrap();
     let saved = card_repo.save_legalities(&[card]).await.unwrap();
     assert!(saved > 0);
 

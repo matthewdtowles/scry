@@ -61,7 +61,7 @@ impl SealedProductMapper {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let contents_summary = item.get("contents").map(|c| Self::flatten_contents(c));
+        let contents_summary = item.get("contents").map(Self::flatten_contents);
 
         Ok(SealedProduct {
             uuid,

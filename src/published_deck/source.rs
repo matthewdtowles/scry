@@ -1,7 +1,7 @@
 use crate::published_deck::domain::{DeckLine, RawDeck};
+use crate::utils::clock;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use crate::utils::clock;
 use chrono::{Datelike, Duration, NaiveDate};
 use reqwest::Client;
 use serde::Deserialize;
@@ -82,6 +82,12 @@ struct CacheCard {
     count: i32,
 }
 
+impl Default for FbettegaSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FbettegaSource {
     pub fn new() -> Self {
         let client = Client::builder()
@@ -108,7 +114,9 @@ impl FbettegaSource {
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(Vec::new());
         }
-        let resp = resp.error_for_status().with_context(|| format!("listing {path}"))?;
+        let resp = resp
+            .error_for_status()
+            .with_context(|| format!("listing {path}"))?;
         match resp.json::<Vec<GhContent>>().await {
             Ok(items) => Ok(items),
             // A shape change / unexpected payload shouldn't fail the whole run,
@@ -151,10 +159,18 @@ impl FbettegaSource {
                 let source_uri = deck.anchor_uri?;
                 let mut lines: Vec<DeckLine> = Vec::new();
                 for c in deck.mainboard {
-                    lines.push(DeckLine { card_name: c.card_name, count: c.count, is_sideboard: false });
+                    lines.push(DeckLine {
+                        card_name: c.card_name,
+                        count: c.count,
+                        is_sideboard: false,
+                    });
                 }
                 for c in deck.sideboard {
-                    lines.push(DeckLine { card_name: c.card_name, count: c.count, is_sideboard: true });
+                    lines.push(DeckLine {
+                        card_name: c.card_name,
+                        count: c.count,
+                        is_sideboard: true,
+                    });
                 }
                 if lines.is_empty() {
                     return None;
@@ -204,7 +220,9 @@ impl DecklistSource for FbettegaSource {
                     if file.kind != "file" || !file.name.ends_with(".json") {
                         continue;
                     }
-                    let Some(url) = file.download_url else { continue };
+                    let Some(url) = file.download_url else {
+                        continue;
+                    };
                     match self.fetch_file(&url).await {
                         Ok(item) => decks.extend(Self::to_raw_decks(item)),
                         Err(e) => warn!("fbettega: failed to parse {}: {e}", file.name),
@@ -249,6 +267,9 @@ mod tests {
         assert_eq!(deck.format.as_deref(), Some("modern"));
         assert_eq!(deck.tournament_date, NaiveDate::from_ymd_opt(2026, 6, 14));
         assert_eq!(deck.lines.len(), 3);
-        assert!(deck.lines.iter().any(|l| l.card_name == "Boseiju, Who Endures" && l.is_sideboard));
+        assert!(deck
+            .lines
+            .iter()
+            .any(|l| l.card_name == "Boseiju, Who Endures" && l.is_sideboard));
     }
 }

@@ -57,7 +57,7 @@ impl CardService {
 
     pub async fn ingest_set_cards(&self, set_code: &str) -> Result<i64> {
         debug!("Starting card ingestion for set: {}", set_code);
-        let raw_data: Value = self.client.fetch_set_cards(&set_code).await?;
+        let raw_data: Value = self.client.fetch_set_cards(set_code).await?;
         let parsed = CardMapper::map_to_cards(raw_data)?;
         if parsed.is_empty() {
             warn!("No cards found for set: {}", set_code);
@@ -299,8 +299,8 @@ impl CardService {
                                     .await?;
                             }
                             None => {
-                                let normal_opt = non_price.and_then(|p| p.0.clone());
-                                let foil_opt = Some(src_foil.clone());
+                                let normal_opt = non_price.and_then(|p| p.0);
+                                let foil_opt = Some(*src_foil);
                                 let _ = self
                                     .price_service
                                     .insert_price_for_card(&ascii.id, normal_opt, foil_opt)
@@ -311,7 +311,10 @@ impl CardService {
                     }
                     let deleted = self
                         .repository
-                        .delete_cards_batch(&[non_ascii.id.clone()], Self::BATCH_SIZE as i64)
+                        .delete_cards_batch(
+                            std::slice::from_ref(&non_ascii.id),
+                            Self::BATCH_SIZE as i64,
+                        )
                         .await?;
                     total_deleted += deleted;
                 }

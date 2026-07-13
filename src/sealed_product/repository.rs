@@ -40,9 +40,9 @@ impl SealedProductRepository {
                 .push_bind(&p.set_code)
                 .push_bind(&p.category)
                 .push_bind(&p.subtype)
-                .push_bind(&p.card_count)
-                .push_bind(&p.product_size)
-                .push_bind(&p.release_date)
+                .push_bind(p.card_count)
+                .push_bind(p.product_size)
+                .push_bind(p.release_date)
                 .push_bind(&p.contents_summary)
                 .push_bind(&p.tcgplayer_product_id);
         });

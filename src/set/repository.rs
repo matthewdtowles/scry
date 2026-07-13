@@ -62,14 +62,14 @@ impl SetRepository {
         );
         query_builder.push_values(sets, |mut b, set| {
             b.push_bind(&set.code)
-                .push_bind(&set.base_size)
+                .push_bind(set.base_size)
                 .push_bind(&set.block)
                 .push_bind(&set.keyrune_code)
                 .push_bind(&set.name)
                 .push_bind(&set.parent_code)
-                .push_bind(&set.release_date)
+                .push_bind(set.release_date)
                 .push_bind(&set.set_type)
-                .push_bind(&set.is_main);
+                .push_bind(set.is_main);
         });
         query_builder.push(
             " ON CONFLICT (code) DO UPDATE SET
@@ -150,11 +150,11 @@ impl SetRepository {
         );
         qb.push_values(&set_prices, |mut b, sp| {
             b.push_bind(&sp.set_code)
-                .push_bind(&sp.base_price)
-                .push_bind(&sp.total_price)
-                .push_bind(&sp.base_price_all)
-                .push_bind(&sp.total_price_all)
-                .push_bind(&sp.date);
+                .push_bind(sp.base_price)
+                .push_bind(sp.total_price)
+                .push_bind(sp.base_price_all)
+                .push_bind(sp.total_price_all)
+                .push_bind(sp.date);
         });
         qb.push(
             " ON CONFLICT (set_code) DO UPDATE SET
@@ -183,11 +183,11 @@ impl SetRepository {
         );
         qb.push_values(&set_prices, |mut b, sp| {
             b.push_bind(&sp.set_code)
-                .push_bind(&sp.base_price)
-                .push_bind(&sp.total_price)
-                .push_bind(&sp.base_price_all)
-                .push_bind(&sp.total_price_all)
-                .push_bind(&sp.date);
+                .push_bind(sp.base_price)
+                .push_bind(sp.total_price)
+                .push_bind(sp.base_price_all)
+                .push_bind(sp.total_price_all)
+                .push_bind(sp.date);
         });
         qb.push(
             " ON CONFLICT (set_code, date) DO UPDATE SET
@@ -463,17 +463,17 @@ impl SetRepository {
         if !base_sizes.is_empty() {
             let mut qb = QueryBuilder::new("WITH vals(code, size) AS (");
             qb.push_values(base_sizes, |mut b, pair| {
-                b.push_bind(&pair.0).push_bind(&pair.1);
+                b.push_bind(&pair.0).push_bind(pair.1);
             });
-            qb.push(&update_stmt("base_size"));
+            qb.push(update_stmt("base_size"));
             total_updated += self.db.execute_query_builder(qb).await?;
         }
         if !total_sizes.is_empty() {
             let mut qb = QueryBuilder::new("WITH vals(code, size) AS (");
             qb.push_values(total_sizes, |mut b, pair| {
-                b.push_bind(&pair.0).push_bind(&pair.1);
+                b.push_bind(&pair.0).push_bind(pair.1);
             });
-            qb.push(&update_stmt("total_size"));
+            qb.push(update_stmt("total_size"));
             total_updated += self.db.execute_query_builder(qb).await?;
         }
         Ok(total_updated)
