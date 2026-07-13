@@ -31,6 +31,11 @@ impl ConnectionPool {
         Ok(result.rows_affected() as i64)
     }
 
+    /// Run a `SELECT COUNT(...)`-shaped query and return the first column.
+    ///
+    /// `query` is always a trusted, caller-owned constant (or a query built from
+    /// constants) - never user input. Value parameters must be bound via a
+    /// `QueryBuilder`, not interpolated.
     pub async fn count(&self, query: &str) -> Result<i64> {
         let row = sqlx::query(query).fetch_one(&*self.pool).await?;
         let count: i64 = row.get(0);
@@ -51,17 +56,19 @@ impl ConnectionPool {
             .map_err(Into::into)
     }
 
+    /// Execute one or more statements with no bind parameters (fixed DDL /
+    /// `TRUNCATE`). `query` is a trusted constant only - it interpolates
+    /// nothing, so never route caller input through here.
     pub async fn execute_raw(&self, query: &str) -> Result<()> {
         sqlx::raw_sql(query).execute(&*self.pool).await?;
         Ok(())
     }
 
-    pub async fn row_exists(&self, table: &str, column: &str, value: &str) -> Result<bool> {
-        let query = format!(
-            r#"SELECT EXISTS(SELECT 1 FROM "{}" WHERE "{}" = $1)"#,
-            table, column
-        );
-        let exists: bool = sqlx::query_scalar(&query)
+    /// `SELECT EXISTS(...)` with a single bound value. `query` is a trusted
+    /// constant with its identifiers baked in and the value bound to `$1`, so
+    /// there is no identifier interpolation to abuse.
+    pub async fn exists(&self, query: &str, value: &str) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(query)
             .bind(value)
             .fetch_one(self.pool.as_ref())
             .await?;

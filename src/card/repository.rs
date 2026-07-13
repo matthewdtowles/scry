@@ -268,7 +268,8 @@ impl CardRepository {
         if code.is_empty() {
             return Ok(false);
         }
-        let exists = self.db.row_exists("set", "code", code).await?;
+        const SET_EXISTS: &str = r#"SELECT EXISTS(SELECT 1 FROM "set" WHERE "code" = $1)"#;
+        let exists = self.db.exists(SET_EXISTS, code).await?;
         Ok(exists)
     }
 

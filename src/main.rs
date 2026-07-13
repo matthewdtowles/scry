@@ -1,24 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
-use cli::{commands::Cli, controller::CliController};
-use config::Config;
+use scry::cli::{commands::Cli, controller::CliController};
+use scry::config::Config;
+use scry::utils::HttpClient;
+use scry::{card, database, health_check, portfolio, price, published_deck, sealed_product, set};
 use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use utils::HttpClient;
-
-mod card;
-mod cli;
-mod config;
-mod database;
-mod health_check;
-mod ingest;
-mod portfolio;
-mod price;
-mod published_deck;
-mod sealed_product;
-mod set;
-mod utils;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -37,8 +25,6 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
     let config = Config::from_env()?;
-
-    info!("Scry - MTG Data Management Tool");
 
     // Initialize minimal shared dependencies
     let connection_pool = Arc::new(database::ConnectionPool::new(&config).await?);
