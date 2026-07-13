@@ -117,7 +117,7 @@ src/
 
 **Ingest pipeline**: The `ingest` command runs a full pipeline: ingest (sets → cards + sealed products in one `AllPrintings.json` pass → prices) → post-ingest prune (remove unwanted data) → post-ingest updates (set sizes, set prices, main set classification fixes). Cards + sealed share a single pass when both are requested (the default); a single `-c` or `--sealed` flag runs that one's standalone stream.
 
-**Batch processing with concurrency**: Card ingestion uses `Semaphore` for bounded concurrency (6 concurrent tasks) with batch sizes of 500 records. Repositories use SQLx `QueryBuilder` for bulk UPSERTs via `ON CONFLICT`.
+**Batch processing**: Card ingestion streams `AllPrintings.json` and flushes one batch per set (so a split card's faces stay together for the mana-cost merge), then saves each batch sequentially in bind-parameter-safe chunks of 500. The stream parser hands batches to the save closure one at a time, so batch saves are sequential - there is no concurrency layer. Repositories use SQLx `QueryBuilder` for bulk UPSERTs via `ON CONFLICT`.
 
 ### Database
 

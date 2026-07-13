@@ -4,7 +4,7 @@ use crate::price::event_processor::PriceEventProcessor;
 use crate::price::historical_event_processor::HistoricalPriceEventProcessor;
 use crate::price::repository::PriceRepository;
 use crate::price::write_timings::{timed, WriteTimings};
-use crate::utils::JsonStreamParser;
+use crate::utils::{clock, JsonStreamParser};
 use crate::{database::ConnectionPool, utils::http_client::HttpClient};
 use anyhow::Result;
 use chrono::NaiveDate;
@@ -158,7 +158,7 @@ impl PriceService {
             return Ok(CkDirectStats::default());
         }
         let byte_stream = self.client.cardkingdom_pricelist_stream().await?;
-        let today = chrono::Utc::now().date_naive();
+        let today = clock::today();
         let rows_saved = AtomicI64::new(0);
         let unmatched = AtomicU64::new(0);
         let timings = WriteTimings::default();

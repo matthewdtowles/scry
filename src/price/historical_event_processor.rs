@@ -1,24 +1,20 @@
-use crate::price::domain::{CardPrices, GranularPrice, Price, PriceAccumulator};
-use crate::price::{AVERAGE_PROVIDERS, GRANULAR_PROVIDERS};
+use crate::price::domain::{CardPrices, Price, PriceAccumulator};
+use crate::price::AVERAGE_PROVIDERS;
 use crate::utils::json_stream_parser::JsonEventProcessor;
 use actson::tokio::AsyncBufReaderJsonFeeder;
 use actson::{JsonEvent, JsonParser};
 use anyhow::Result;
-use chrono::NaiveDate;
-use rust_decimal::Decimal;
 use std::collections::HashMap;
 
 /// Event processor for AllPrices.json (historical multi-date data).
 ///
 /// Per card, emits a `CardPrices` bundle with one averaged retail `Price` per
-/// date (the existing `price_history` behavior) plus one `GranularPrice` row
-/// per provider/type/finish/date — a one-shot historical backfill of the
-/// granular store. The averages use `AVERAGE_PROVIDERS` (retail only) so
-/// `price_history` is unchanged; granular captures `GRANULAR_PROVIDERS`.
+/// date (the `price_history` behavior). The averages use `AVERAGE_PROVIDERS`
+/// (retail only). The granular store is CK-direct-only now (ROADMAP 10.10), so
+/// this processor no longer captures granular rows.
 pub struct HistoricalPriceEventProcessor {
     /// Map of date string -> PriceAccumulator for the current card
     accumulators: HashMap<String, PriceAccumulator>,
-    current_granular: Vec<GranularPrice>,
     batch: Vec<CardPrices>,
     batch_size: usize,
     current_card_uuid: Option<String>,
@@ -76,7 +72,6 @@ impl HistoricalPriceEventProcessor {
     pub fn new(batch_size: usize) -> Self {
         Self {
             accumulators: HashMap::new(),
-            current_granular: Vec::new(),
             batch: Vec::with_capacity(batch_size),
             batch_size,
             current_card_uuid: None,
@@ -103,13 +98,11 @@ impl HistoricalPriceEventProcessor {
                         averages.push(price);
                     }
                 }
-                let granular = std::mem::take(&mut self.current_granular);
-                if !averages.is_empty() || !granular.is_empty() {
-                    self.batch.push(CardPrices { averages, granular });
+                if !averages.is_empty() {
+                    self.batch.push(CardPrices { averages });
                 }
             }
             self.accumulators.clear();
-            self.current_granular.clear();
             let processed = if self.batch.len() >= self.batch_size {
                 self.batch.len()
             } else {
@@ -134,7 +127,6 @@ impl HistoricalPriceEventProcessor {
         } else if self.in_price_object() {
             self.current_card_uuid = Some(field_name.clone());
             self.accumulators.clear();
-            self.current_granular.clear();
         }
         self.path.push(field_name);
         Ok(0)
@@ -147,13 +139,7 @@ impl HistoricalPriceEventProcessor {
             let finish = self.path[5].clone();
             let date_str = self.path[6].clone();
 
-            // Granular capture: broad provider set, retail + buylist, per date.
-            if GRANULAR_PROVIDERS.contains(&provider.as_str()) {
-                self.record_granular(&provider, &price_type, &finish, &date_str, &value);
-            }
-
-            // Derived per-date averages: original providers, retail only, so
-            // price_history is identical to the pre-granular behavior.
+            // Derived per-date averages: original providers, retail only.
             if price_type == "retail" && AVERAGE_PROVIDERS.contains(&provider.as_str()) {
                 if let Ok(price) = value.parse::<f64>() {
                     let acc = self
@@ -181,34 +167,6 @@ impl HistoricalPriceEventProcessor {
             && (self.path[5] == "normal" || self.path[5] == "foil" || self.path[5] == "etched")
     }
 
-    fn record_granular(
-        &mut self,
-        provider: &str,
-        price_type: &str,
-        finish: &str,
-        date_str: &str,
-        value: &str,
-    ) {
-        let (Some(card_uuid), Ok(price), Ok(date)) = (
-            self.current_card_uuid.clone(),
-            value.parse::<Decimal>(),
-            NaiveDate::parse_from_str(date_str, "%Y-%m-%d"),
-        ) else {
-            return;
-        };
-        if let Ok(gp) = GranularPrice::new(
-            card_uuid,
-            provider.to_string(),
-            price_type.to_string(),
-            finish.to_string(),
-            GranularPrice::DEFAULT_CONDITION.to_string(),
-            date,
-            price,
-        ) {
-            self.current_granular.push(gp);
-        }
-    }
-
     fn in_price_object(&self) -> bool {
         self.in_data_object && self.json_depth == 2
     }
@@ -219,6 +177,7 @@ mod tests {
     use super::*;
     use actson::tokio::AsyncBufReaderJsonFeeder;
     use actson::JsonParser;
+    use chrono::NaiveDate;
     use tokio::io::BufReader;
 
     /// Parse a JSON string through the processor and return all emitted bundles.
@@ -392,10 +351,7 @@ mod tests {
         }"#;
 
         let cards = parse_json(json).await;
-        assert!(
-            cards.is_empty(),
-            "Unknown provider yields no averages or granular"
-        );
+        assert!(cards.is_empty(), "Unknown provider yields no averages");
     }
 
     #[tokio::test]
@@ -420,33 +376,5 @@ mod tests {
         let price = &prices[0];
         assert_eq!(price.normal.unwrap().to_string(), "5");
         assert_eq!(price.foil.unwrap().to_string(), "15");
-    }
-
-    #[tokio::test]
-    async fn test_granular_backfill_multi_date_retail_and_buylist() {
-        let json = r#"{
-            "data": {
-                "card-uuid-6": {
-                    "paper": {
-                        "cardkingdom": {
-                            "retail": { "normal": { "2024-01-01": 5.00, "2024-01-02": 5.50 } },
-                            "buylist": { "normal": { "2024-01-01": 3.00, "2024-01-02": 3.25 } }
-                        }
-                    }
-                }
-            }
-        }"#;
-
-        let cards = parse_json(json).await;
-        assert_eq!(cards.len(), 1);
-        let g = &cards[0].granular;
-        // 2 retail + 2 buylist rows across two dates
-        assert_eq!(g.len(), 4);
-        assert_eq!(g.iter().filter(|r| r.price_type == "buylist").count(), 2);
-        assert!(g
-            .iter()
-            .all(|r| r.condition == "NM" && r.provider == "cardkingdom"));
-        // averages (retail only) = one per date
-        assert_eq!(cards[0].averages.len(), 2);
     }
 }

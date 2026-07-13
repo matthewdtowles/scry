@@ -1,7 +1,8 @@
 use crate::published_deck::domain::{DeckLine, RawDeck};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{Datelike, Duration, NaiveDate, Utc};
+use crate::utils::clock;
+use chrono::{Datelike, Duration, NaiveDate};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration as StdDuration;
@@ -180,7 +181,7 @@ impl DecklistSource for FbettegaSource {
     }
 
     async fn fetch_recent(&self, days: i64) -> Result<Vec<RawDeck>> {
-        let today = Utc::now().date_naive();
+        let today = clock::today();
         let mut decks: Vec<RawDeck> = Vec::new();
 
         for offset in 0..days.max(1) {

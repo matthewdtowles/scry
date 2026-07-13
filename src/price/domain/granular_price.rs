@@ -59,16 +59,14 @@ impl GranularPrice {
     }
 }
 
-/// A card's full price contribution from one stream pass: the granular rows for
-/// every provider/type/finish/date, plus the derived averaged retail price(s)
-/// that feed the existing `price`/`price_history` tables. Both come from the
-/// same pass so those tables stay exactly as before while the granular store
-/// fills. `averages` holds one entry per date — 0 or 1 for today's ingest, many
-/// for the historical (multi-date) ingest.
+/// A card's derived averaged retail price(s) from one MTGJSON stream pass, which
+/// feed the `price`/`price_history` tables. `averages` holds one entry per date
+/// — 0 or 1 for today's ingest, many for the historical (multi-date) ingest.
+/// The per-vendor granular store is written only from the CK-direct path now
+/// (ROADMAP 10.10), so the MTGJSON processors no longer carry granular rows.
 #[derive(Clone, Debug, Default)]
 pub struct CardPrices {
     pub averages: Vec<Price>,
-    pub granular: Vec<GranularPrice>,
 }
 
 #[cfg(test)]
