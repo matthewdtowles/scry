@@ -177,15 +177,15 @@ CREATE TABLE IF NOT EXISTS set_price_history (
     UNIQUE(set_code, date)
 );
 
--- Inventory table
--- user_id is a plain column here (no users table in the fixture); the portfolio
--- queries GROUP BY it.
+-- Inventory table (mirrors the web schema: one row per card+finish, keyed by
+-- (card_id, user_id, foil); user FK omitted - no users table in the fixture).
+-- The portfolio queries read i.foil + i.quantity and GROUP BY i.user_id.
 CREATE TABLE IF NOT EXISTS inventory (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
     card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
-    quantity INTEGER NOT NULL DEFAULT 0,
-    foil_quantity INTEGER NOT NULL DEFAULT 0
+    user_id INTEGER NOT NULL,
+    foil BOOLEAN NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (card_id, user_id, foil)
 );
 
 -- Portfolio value history table (mirrors web migration; user FK omitted - no
