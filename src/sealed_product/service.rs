@@ -2,6 +2,7 @@ use crate::database::ConnectionPool;
 use crate::sealed_product::domain::SealedProduct;
 use crate::sealed_product::event_processor::SealedProductEventProcessor;
 use crate::sealed_product::repository::SealedProductRepository;
+use crate::set::ports::SetCodesSource;
 use crate::set::repository::SetRepository;
 use crate::utils::http_client::HttpClient;
 use crate::utils::json_stream_parser::JsonStreamParser;
@@ -13,7 +14,7 @@ use tracing::{debug, info, warn};
 pub struct SealedProductService {
     client: Arc<HttpClient>,
     repository: SealedProductRepository,
-    set_repository: SetRepository,
+    set_codes: Arc<dyn SetCodesSource>,
 }
 
 impl SealedProductService {
@@ -23,7 +24,7 @@ impl SealedProductService {
         Self {
             client: http_client,
             repository: SealedProductRepository::new(db.clone()),
-            set_repository: SetRepository::new(db),
+            set_codes: Arc::new(SetRepository::new(db)),
         }
     }
 
@@ -32,7 +33,7 @@ impl SealedProductService {
     }
 
     /// The sealed-product repository (cheap clone) for the single-pass ingest
-    /// in [`crate::card::service::CardService::ingest_all_with_sealed`].
+    /// orchestrated in [`crate::cli::ingest_pipeline`].
     pub fn repository(&self) -> SealedProductRepository {
         self.repository.clone()
     }
@@ -40,7 +41,7 @@ impl SealedProductService {
     /// Set codes currently in the `set` table - the sealed-product set filter.
     pub async fn fetch_valid_set_codes(&self) -> Result<HashSet<String>> {
         Ok(self
-            .set_repository
+            .set_codes
             .fetch_all_set_codes()
             .await
             .context("Failed to load set codes for sealed-product filter")?
@@ -59,7 +60,7 @@ impl SealedProductService {
     pub async fn ingest_all(&self) -> Result<i64> {
         info!("Starting sealed product ingestion from AllPrintings stream");
         let valid_set_codes: Arc<HashSet<String>> = Arc::new(
-            self.set_repository
+            self.set_codes
                 .fetch_all_set_codes()
                 .await
                 .context("Failed to load set codes for sealed-product filter")?

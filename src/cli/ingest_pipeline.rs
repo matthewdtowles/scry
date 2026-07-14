@@ -1,11 +1,16 @@
 use crate::cli::confirm_destructive;
+use crate::ingest::{CardSealedEventProcessor, IngestRecord};
+use crate::sealed_product::domain::SealedProduct;
+use crate::utils::JsonStreamParser;
 use crate::{
-    card::service::CardService, portfolio::service::PortfolioService, price::PriceService,
-    published_deck::service::PublishedDeckService, sealed_product::service::SealedProductService,
-    set::service::SetService,
+    card::domain::Card, card::service::CardService, portfolio::service::PortfolioService,
+    price::PriceService, published_deck::service::PublishedDeckService,
+    sealed_product::service::SealedProductService, set::service::SetService,
 };
 use anyhow::Result;
+use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 /// The ingest application service: owns pipeline ordering, prune policy, and the
@@ -173,12 +178,8 @@ impl IngestPipeline<'_> {
         let cards_before = self.card_service.fetch_count().await?;
         let sealed_before = self.sealed_product_service.fetch_count().await?;
         let valid_set_codes = self.sealed_product_service.fetch_valid_set_codes().await?;
-        let sealed_repo = self.sealed_product_service.repository();
         let start = std::time::Instant::now();
-        let sealed_saved = self
-            .card_service
-            .ingest_all_with_sealed(sealed_repo, valid_set_codes)
-            .await?;
+        let sealed_saved = self.run_single_pass_ingest(valid_set_codes).await?;
         let elapsed = start.elapsed();
         let cards_after = self.card_service.fetch_count().await?;
         let sealed_after = self.sealed_product_service.fetch_count().await?;
@@ -192,6 +193,71 @@ impl IngestPipeline<'_> {
             sealed_before, sealed_after, sealed_saved
         );
         Ok(())
+    }
+
+    /// The single-pass card+sealed ingest itself. Both records come from one
+    /// `AllPrintings.json` stream via the tee processor (so the file is
+    /// downloaded + tokenized once). This orchestration lives in the application
+    /// layer because it is inherently cross-module - it drives the card
+    /// persistence (`CardService::save_card_batch`) and the sealed persistence
+    /// (the sealed repo) from a single stream. Returns sealed products saved.
+    async fn run_single_pass_ingest(&self, valid_set_codes: HashSet<String>) -> Result<i64> {
+        let valid_set_codes = Arc::new(valid_set_codes);
+        let card_repo = self.card_service.repository();
+        let sealed_repo = self.sealed_product_service.repository();
+        let byte_stream = self.card_service.all_cards_stream().await?;
+        let event_processor = CardSealedEventProcessor::new(
+            CardService::BATCH_SIZE,
+            SealedProductService::BATCH_SIZE,
+        );
+        let mut json_stream_parser = JsonStreamParser::new(event_processor);
+        let sealed_total = Arc::new(Mutex::new(0i64));
+        let sealed_total_for_closure = sealed_total.clone();
+        json_stream_parser
+            .parse_stream(byte_stream, move |batch| {
+                let card_repo = card_repo.clone();
+                let sealed_repo = sealed_repo.clone();
+                let valid_set_codes = valid_set_codes.clone();
+                let sealed_total = sealed_total_for_closure.clone();
+                Box::pin(async move {
+                    // In practice each batch is homogeneous (only one extractor
+                    // flushes per event), but split by variant to be safe.
+                    let mut cards: Vec<Card> = Vec::new();
+                    let mut sealed: Vec<SealedProduct> = Vec::new();
+                    for record in batch {
+                        match record {
+                            IngestRecord::Card(c) => cards.push(c),
+                            IngestRecord::Sealed(s) => sealed.push(s),
+                        }
+                    }
+                    if !cards.is_empty() {
+                        CardService::save_card_batch(&card_repo, cards).await?;
+                    }
+                    if !sealed.is_empty() {
+                        let set_code = sealed[0].set_code.clone();
+                        let filtered: Vec<SealedProduct> = sealed
+                            .into_iter()
+                            .filter(|p| valid_set_codes.contains(&p.set_code))
+                            .collect();
+                        if !filtered.is_empty() {
+                            match sealed_repo.save(&filtered).await {
+                                Ok(count) => {
+                                    let mut lock = sealed_total.lock().await;
+                                    *lock += count;
+                                }
+                                Err(e) => warn!(
+                                    "Failed to save sealed products for set {}: {:#}",
+                                    set_code, e
+                                ),
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .await?;
+        let final_total = *sealed_total.lock().await;
+        Ok(final_total)
     }
 
     /// Standalone CK-direct buylist refresh (`ingest -b`): re-run the live
@@ -304,7 +370,10 @@ impl IngestPipeline<'_> {
         let sets_deleted = self.set_service.prune_empty_sets().await?;
         info!("Pruned {} sets without any cards.", sets_deleted);
 
-        let cards_deleted = self.card_service.prune_duplicate_foils().await?;
+        let cards_deleted = self
+            .card_service
+            .prune_duplicate_foils(self.price_service)
+            .await?;
         info!("Pruned {} duplicate foil cards.", cards_deleted);
 
         let total_sets_after = self.set_service.fetch_count().await?;

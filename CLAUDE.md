@@ -99,12 +99,14 @@ src/
 │   ├── domain/          — Card, CardRarity, Format, Legality, LegalityStatus, MainSetClassifier
 │   ├── event_processor.rs — JsonEventProcessor impl for streaming card parsing
 │   ├── mapper.rs        — MTGJSON JSON → Card domain mapping
-│   ├── repository.rs    — Card/legality UPSERT queries
-│   └── service.rs       — Card ingestion, cleanup, pruning logic
+│   ├── ports.rs        — CardDataSource + CardRepositoryPort traits (so CardService is testable with fakes)
+│   ├── repository.rs    — Card/legality UPSERT queries (impls CardRepositoryPort)
+│   └── service.rs       — Card ingestion, cleanup, pruning (depends on the ports above)
 ├── set/
 │   ├── domain/          — Set, SetPrice
 │   ├── mapper.rs        — MTGJSON JSON → Set domain mapping
-│   ├── repository.rs    — Set UPSERT/delete queries
+│   ├── ports.rs        — SetCodesSource trait (the sealed-product filter depends on it, not SetRepository directly)
+│   ├── repository.rs    — Set UPSERT/delete queries (impls SetCodesSource)
 │   └── service.rs       — Set ingestion, cleanup, size/price updates
 ├── price/
 │   ├── domain/          — Price, PriceAccumulator, GranularPrice/CardPrices (granular_price.rs)
@@ -132,6 +134,8 @@ src/
 **Streaming JSON parsing**: Card, sealed-product, and price ingestion use `JsonStreamParser<T, P>` with the `JsonEventProcessor` trait. This streams MTGJSON's bulk data files (~200MB+) through actson without loading them into memory. Each module implements its own `EventProcessor` that emits batches. Cards and sealed products both come from `AllPrintings.json`, so `ingest.rs`'s `CardSealedEventProcessor` tees one stream to both extractors (each tracks its own depth/skip state) to avoid downloading + parsing that file twice.
 
 **Dependency injection via constructor**: `main.rs` wires up the dependency graph manually — `ConnectionPool` → services → `CliController`. Services take `Arc<ConnectionPool>` and `Arc<HttpClient>`.
+
+**Ports for testability**: `CardService` depends on the `CardDataSource` + `CardRepositoryPort` traits (`card/ports.rs`), not the concrete `HttpClient`/`CardRepository`. Its `new()` wires the real adapters; `with_ports()` lets a test inject a canned byte stream + a spy repository, so `ingest_all` (stream → parse → persist) is unit-tested with no live HTTP or Postgres. Cross-module orchestration lives in the application layer: the single-pass card+sealed ingest and the pricing-aware `prune_duplicate_foils` are driven by `IngestPipeline` (`cli/ingest_pipeline.rs`), which owns both services, so `CardService` neither holds `PriceService` nor persists sealed products itself.
 
 **Ingest pipeline**: The `ingest` command runs a full pipeline: ingest (sets → cards + sealed products in one `AllPrintings.json` pass → prices) → post-ingest prune (remove unwanted data) → post-ingest updates (set sizes, set prices, main set classification fixes). Cards + sealed share a single pass when both are requested (the default); a single `-c` or `--sealed` flag runs that one's standalone stream.
 

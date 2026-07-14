@@ -43,11 +43,7 @@ async fn main() -> Result<()> {
     let published_deck_service =
         published_deck::service::PublishedDeckService::new(connection_pool.clone());
     let cli_controller = CliController::new(
-        card::service::CardService::new(
-            connection_pool.clone(),
-            http_client.clone(),
-            price_service.clone(),
-        ),
+        card::service::CardService::new(connection_pool.clone(), http_client.clone()),
         set::service::SetService::new(connection_pool.clone(), http_client.clone()),
         price_service.clone(),
         health_check::service::HealthCheckService::new(connection_pool),
