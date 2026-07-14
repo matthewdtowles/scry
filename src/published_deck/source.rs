@@ -141,11 +141,13 @@ impl FbettegaSource {
 
     fn to_raw_decks(item: CacheItem) -> Vec<RawDeck> {
         let tname = item.tournament.name.clone();
-        let tdate = item
-            .tournament
-            .date
-            .as_deref()
-            .and_then(|d| NaiveDate::parse_from_str(&d[..d.len().min(10)], "%Y-%m-%d").ok());
+        let tdate = item.tournament.date.as_deref().and_then(|d| {
+            // Take the YYYY-MM-DD prefix. get(..10) returns None on a short
+            // string or a non-char boundary, so it never panics on a malformed
+            // multi-byte value the way &d[..10] would.
+            d.get(..10)
+                .and_then(|prefix| NaiveDate::parse_from_str(prefix, "%Y-%m-%d").ok())
+        });
         let format = item
             .tournament
             .formats

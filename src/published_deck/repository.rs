@@ -80,13 +80,17 @@ impl PublishedDeckRepository {
             );
         };
 
-        // Replace children so re-ingesting a changed deck stays consistent.
+        // Replace children so re-ingesting a changed deck stays consistent. The
+        // DELETE + INSERT run in one transaction so a crash between them can't
+        // strand the deck with no cards (§5/§6); the old children stay put if the
+        // insert fails.
         let mut del =
             QueryBuilder::new("DELETE FROM published_deck_card WHERE published_deck_id = ");
         del.push_bind(deck_id);
-        self.db.execute_query_builder(del).await?;
 
-        if !cards.is_empty() {
+        if cards.is_empty() {
+            self.db.execute_query_builder(del).await?;
+        } else {
             let mut ins = QueryBuilder::new(
                 "INSERT INTO published_deck_card (published_deck_id, card_id, quantity, is_sideboard) ",
             );
@@ -96,7 +100,7 @@ impl PublishedDeckRepository {
                     .push_bind(c.quantity)
                     .push_bind(c.is_sideboard);
             });
-            self.db.execute_query_builder(ins).await?;
+            self.db.execute_query_builders_tx(vec![del, ins]).await?;
         }
         Ok(())
     }

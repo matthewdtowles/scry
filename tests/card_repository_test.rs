@@ -76,8 +76,7 @@ async fn test_save_legalities() {
         .save_cards(std::slice::from_ref(&card))
         .await
         .unwrap();
-    let saved = card_repo.save_legalities(&[card]).await.unwrap();
-    assert!(saved > 0);
+    card_repo.save_legalities(&[card]).await.unwrap();
 
     let legality_count = card_repo.legality_count().await.unwrap();
     assert!(legality_count > 0);
@@ -248,7 +247,6 @@ async fn test_delete_card_with_price_history_cascades() {
         .unwrap();
     price_repo
         .save_price_history(&[Price {
-            id: None,
             card_id: "c08-c1".to_string(),
             normal: Some(Decimal::new(150, 2)),
             foil: Some(Decimal::new(300, 2)),

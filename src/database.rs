@@ -31,6 +31,25 @@ impl ConnectionPool {
         Ok(result.rows_affected() as i64)
     }
 
+    /// Execute several statements in one transaction, in order, returning the
+    /// total rows affected. Any failure rolls the whole batch back. Use this
+    /// where a multi-statement write must be atomic (e.g. the DELETE+INSERT in
+    /// `save_legalities`, or the child-row DELETE+INSERT in `save_deck`; the
+    /// deck upsert stays separate because it needs its RETURNING id first).
+    pub async fn execute_query_builders_tx(
+        &self,
+        builders: Vec<QueryBuilder<'_, Postgres>>,
+    ) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        let mut total: i64 = 0;
+        for mut builder in builders {
+            let result = builder.build().execute(&mut *tx).await?;
+            total += result.rows_affected() as i64;
+        }
+        tx.commit().await?;
+        Ok(total)
+    }
+
     /// Run a `SELECT COUNT(...)`-shaped query and return the first column.
     ///
     /// `query` is always a trusted, caller-owned constant (or a query built from

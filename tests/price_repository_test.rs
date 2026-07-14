@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 fn create_test_price(card_id: &str, normal: f64, foil: f64) -> Price {
     Price {
-        id: None,
         card_id: card_id.to_string(),
         normal: Some(Decimal::try_from(normal).unwrap()),
         foil: Some(Decimal::try_from(foil).unwrap()),
@@ -117,7 +116,6 @@ async fn test_delete_by_date() {
 
     // Use a unique date so delete_by_date doesn't affect other tests
     let price = Price {
-        id: None,
         card_id: "p04-c1".to_string(),
         normal: Some(rust_decimal::Decimal::try_from(1.50).unwrap()),
         foil: Some(rust_decimal::Decimal::try_from(3.00).unwrap()),

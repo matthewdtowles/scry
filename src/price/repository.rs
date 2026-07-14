@@ -134,6 +134,17 @@ impl PriceRepository {
         self.db.execute_query_builder(query_builder).await
     }
 
+    /// Delete every price row older than the most recent price date, in one
+    /// statement (§5). No-op when the table is empty or has a single date.
+    pub async fn delete_prices_before_latest(&self) -> Result<i64> {
+        let query = format!(
+            "DELETE FROM {t} WHERE date < (SELECT MAX(date) FROM {t})",
+            t = Self::PRICE_TABLE
+        );
+        let query_builder = QueryBuilder::new(query);
+        self.db.execute_query_builder(query_builder).await
+    }
+
     pub async fn fetch_prices_for_card_ids(
         &self,
         card_ids: &[String],

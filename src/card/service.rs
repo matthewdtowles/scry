@@ -398,8 +398,8 @@ mod tests {
             }
             Ok(cards.len() as i64)
         }
-        async fn save_legalities(&self, _cards: &[Card]) -> Result<i64> {
-            Ok(0)
+        async fn save_legalities(&self, _cards: &[Card]) -> Result<()> {
+            Ok(())
         }
         async fn count(&self) -> Result<u64> {
             unimplemented!()
