@@ -10,10 +10,8 @@ impl SetMapper {
         let block = json::extract_optional_string(set_data, "block");
         let keyrune_code = json::extract_string(set_data, "keyruneCode")?.to_lowercase();
         let name = json::extract_string(set_data, "name")?;
-        let parent_code = match json::extract_optional_string(set_data, "parentCode") {
-            Some(pc) => Some(pc.to_lowercase()),
-            None => None,
-        };
+        let parent_code =
+            json::extract_optional_string(set_data, "parentCode").map(|pc| pc.to_lowercase());
         let release_date = json::extract_date(set_data, "releaseDate")?;
         let set_type = json::extract_string(set_data, "type")?;
         let is_online_only = set_data

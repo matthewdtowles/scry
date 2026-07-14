@@ -59,8 +59,8 @@ impl PortfolioRepository {
         );
         qb.push_values(snapshots, |mut b, s| {
             b.push_bind(s.user_id)
-                .push_bind(&s.total_value)
-                .push_bind(&s.total_cost)
+                .push_bind(s.total_value)
+                .push_bind(s.total_cost)
                 .push_bind(s.total_cards)
                 .push_bind(s.date);
         });
@@ -201,9 +201,9 @@ impl PortfolioRepository {
         );
         qb.push_values(summaries, |mut b, s| {
             b.push_bind(s.user_id)
-                .push_bind(&s.total_value)
-                .push_bind(&s.total_cost)
-                .push_bind(&s.total_realized_gain)
+                .push_bind(s.total_value)
+                .push_bind(s.total_cost)
+                .push_bind(s.total_realized_gain)
                 .push_bind(s.total_cards)
                 .push_bind(s.total_quantity)
                 .push("NOW()")
@@ -255,12 +255,12 @@ impl PortfolioRepository {
                 .push_bind(&r.card_id)
                 .push_bind(r.is_foil)
                 .push_bind(r.quantity)
-                .push_bind(&r.total_cost)
-                .push_bind(&r.average_cost)
-                .push_bind(&r.current_value)
-                .push_bind(&r.unrealized_gain)
-                .push_bind(&r.realized_gain)
-                .push_bind(&r.roi_percent)
+                .push_bind(r.total_cost)
+                .push_bind(r.average_cost)
+                .push_bind(r.current_value)
+                .push_bind(r.unrealized_gain)
+                .push_bind(r.realized_gain)
+                .push_bind(r.roi_percent)
                 .push("NOW()");
         });
         self.db.execute_query_builder(qb).await

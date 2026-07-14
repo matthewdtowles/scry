@@ -7,6 +7,33 @@ on:
         branches: [main]
 
 jobs:
+    lint:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
+
+            - name: Cache cargo
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: ${{ runner.os }}-cargo-lint-
+
+            - name: Check formatting
+              run: cargo fmt --all --check
+
+            - name: Clippy
+              run: cargo clippy --all-targets -- -D warnings
+
     test:
         runs-on: ubuntu-latest
         services:
@@ -49,7 +76,7 @@ jobs:
     # subject): feat -> minor, ! -> major, anything else -> patch. Git tags
     # are the source of truth; Cargo.toml stays at its 0.0.0-dev placeholder.
     version:
-        needs: test
+        needs: [test, lint]
         runs-on: ubuntu-latest
         if: github.ref == 'refs/heads/main'
         outputs:

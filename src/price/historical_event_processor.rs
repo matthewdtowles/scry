@@ -142,10 +142,7 @@ impl HistoricalPriceEventProcessor {
             // Derived per-date averages: original providers, retail only.
             if price_type == "retail" && AVERAGE_PROVIDERS.contains(&provider.as_str()) {
                 if let Ok(price) = value.parse::<f64>() {
-                    let acc = self
-                        .accumulators
-                        .entry(date_str)
-                        .or_insert_with(PriceAccumulator::new);
+                    let acc = self.accumulators.entry(date_str).or_default();
                     if finish == "foil" || finish == "etched" {
                         acc.add_foil(price);
                     } else if finish == "normal" {

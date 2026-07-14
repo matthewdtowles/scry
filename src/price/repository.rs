@@ -111,16 +111,16 @@ impl PriceRepository {
                     .push_bind(&price.price_type)
                     .push_bind(&price.finish)
                     .push_bind(&price.condition)
-                    .push_bind(&price.date)
-                    .push_bind(&price.price)
-                    .push_bind(&price.qty);
+                    .push_bind(price.date)
+                    .push_bind(price.price)
+                    .push_bind(price.qty);
             });
             query_builder.push(conflict_clause);
             match self.db.execute_query_builder(query_builder).await {
                 Ok(count) => total += count,
                 Err(e) => {
                     error!("Database error: {:?}", e);
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
         }
@@ -263,9 +263,9 @@ impl PriceRepository {
             let mut query_builder = QueryBuilder::new(query);
             query_builder.push_values(chunk, |mut b, price| {
                 b.push_bind(&price.card_id)
-                    .push_bind(&price.foil)
-                    .push_bind(&price.normal)
-                    .push_bind(&price.date);
+                    .push_bind(price.foil)
+                    .push_bind(price.normal)
+                    .push_bind(price.date);
             });
             query_builder.push(
                 " ON CONFLICT (card_id, date) DO UPDATE SET
@@ -282,7 +282,7 @@ impl PriceRepository {
                 Ok(count) => total += count,
                 Err(e) => {
                     error!("Database error: {:?}", e);
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
         }

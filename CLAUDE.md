@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Scry is a Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gathering data from the Scryfall API into a PostgreSQL database. It is part of the larger "I Want My MTG" project. The web app lives in a separate repository: [i-want-my-mtg](https://github.com/matthewdtowles/i-want-my-mtg).
+Scry is a Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gathering data into a PostgreSQL database. Its sources are **MTGJSON** bulk files (`AllPrintings.json`, `AllPricesToday.json`, `AllPrices.json`), the **Card Kingdom** direct pricelist (live buylist), and the **fbettega** tournament-deck feed - not the Scryfall API (Scryfall is only the source of the card *images* the web app renders). It is part of the larger "I Want My MTG" project. The web app lives in a separate repository: [i-want-my-mtg](https://github.com/matthewdtowles/i-want-my-mtg).
 
 ## Common Commands
 
@@ -17,14 +17,19 @@ cargo run -- ingest -s            # Ingest sets only
 cargo run -- ingest -c            # Ingest cards only
 cargo run -- ingest -p            # Ingest prices only
 cargo run -- ingest -k abc        # Ingest cards for a specific set code
+cargo run -- ingest -b            # Refresh Card Kingdom direct buylist only (no MTGJSON price re-ingest)
 cargo run -- ingest -r            # Reset all data before ingesting (interactive confirm)
+cargo run -- ingest-decks --days 2 # Ingest published tournament decks (fbettega feed) for the last N days
 cargo run -- post-ingest-prune    # Prune unwanted data (foreign unpriced, empty sets, dup foils)
-cargo run -- post-ingest-updates  # Recalculate set sizes, prices, fix main set classifications
+cargo run -- post-ingest-updates  # Recalculate set sizes, prices, fix main set classifications, portfolio snapshots
 cargo run -- cleanup -c           # Stream-cleanup individual cards based on filtering rules
 cargo run -- health               # Basic health check
 cargo run -- health --detailed    # Detailed health check
 cargo run -- interactive          # Launch interactive menu (run multiple commands in one session)
 cargo run -- retention            # Apply tiered retention to price_history, granular_price_history, set_price_history, portfolio_value_history
+cargo run -- portfolio-summary    # Compute portfolio_summary + card_performance for all users (cron)
+cargo run -- backfill             # One-time: load historical prices from AllPrices.json into price_history
+cargo run -- backfill-set-price-history # One-time: derive set_price_history from price_history
 cargo run -- truncate-history     # Truncate price_history (interactive confirm)
 ```
 
@@ -33,10 +38,11 @@ Set `SCRY_LOG` env var for log verbosity (default: `scry=info`). Reads `DATABASE
 ### CI/CD
 
 GitHub Actions workflow (`.github/workflows/ci.yml`) on push to main:
-1. **test** — Runs `cargo test -- --include-ignored` (unit + integration)
-2. **version** — Computes the next semver from git tags + the squash-merged PR title (`.github/scripts/next-version.sh`): `feat:` → minor, `!` → major, anything else → patch
-3. **tag** — Creates GitHub release for the computed version
-4. **build** — Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`, stamping the version into Cargo.toml via the `APP_VERSION` build arg
+1. **lint** — `cargo fmt --all --check` + `cargo clippy --all-targets -- -D warnings` (both gate the pipeline)
+2. **test** — Runs `cargo test -- --include-ignored` (unit + integration)
+3. **version** — Computes the next semver from git tags + the squash-merged PR title (`.github/scripts/next-version.sh`): `feat:` → minor, `!` → major, anything else → patch
+4. **tag** — Creates GitHub release for the computed version
+5. **build** — Builds and pushes Docker image to `ghcr.io/matthewdtowles/scry:latest`, stamping the version into Cargo.toml via the `APP_VERSION` build arg
 
 Git tags are the source of truth for the version; Cargo.toml stays at its `0.0.0-dev` placeholder. Use squash merge so the PR title becomes the commit subject on main.
 
@@ -75,43 +81,55 @@ docker build -t scry-dev --target development .  # Build development image
 
 Each feature module follows a consistent pattern: `domain/` (data types), `mapper.rs` (API JSON to domain), `repository.rs` (SQLx queries), `service.rs` (business logic).
 
+The crate is a library (`lib.rs`) with a thin binary (`main.rs`) over it, so the
+code and its tests compile once. `cli` lives in the library.
+
 ```
 src/
-├── main.rs              — Entry point: tokio runtime, logging, DI wiring
+├── main.rs              — Thin shim: builds services, runs CliController (all logic is in lib.rs)
+├── lib.rs               — Library root; declares every module (incl. cli)
 ├── cli/
 │   ├── commands.rs      — Clap CLI definitions (Commands enum)
-│   └── controller.rs    — Command dispatch, orchestrates service calls
-├── config.rs            — Env-based config (DATABASE_URL, pool size)
+│   ├── controller.rs    — Command dispatch + interactive menu + prompts/display
+│   └── ingest_pipeline.rs — IngestPipeline: ingest ordering, prune policy, first-error-wins aggregation
+├── config.rs            — Env-based config (DATABASE_URL / DB_* parts, pool size)
 ├── database.rs          — ConnectionPool wrapper around SQLx PgPool
 ├── ingest.rs            — Single-pass card + sealed tee (CardSealedEventProcessor) over AllPrintings.json
 ├── card/
 │   ├── domain/          — Card, CardRarity, Format, Legality, LegalityStatus, MainSetClassifier
 │   ├── event_processor.rs — JsonEventProcessor impl for streaming card parsing
-│   ├── mapper.rs        — Scryfall JSON → Card domain mapping
+│   ├── mapper.rs        — MTGJSON JSON → Card domain mapping
 │   ├── repository.rs    — Card/legality UPSERT queries
 │   └── service.rs       — Card ingestion, cleanup, pruning logic
 ├── set/
 │   ├── domain/          — Set, SetPrice
-│   ├── mapper.rs        — Scryfall JSON → Set domain mapping
+│   ├── mapper.rs        — MTGJSON JSON → Set domain mapping
 │   ├── repository.rs    — Set UPSERT/delete queries
 │   └── service.rs       — Set ingestion, cleanup, size/price updates
 ├── price/
-│   ├── domain/          — Price, PriceAccumulator
-│   ├── event_processor.rs — JsonEventProcessor impl for streaming price parsing
-│   ├── repository.rs    — Price/price_history queries
-│   └── service.rs       — Price ingestion, retention, cleanup
+│   ├── domain/          — Price, PriceAccumulator, GranularPrice/CardPrices (granular_price.rs)
+│   ├── event_processor.rs — Averaged-price processor for AllPricesToday.json
+│   ├── historical_event_processor.rs — Multi-date averaged-price processor for AllPrices.json
+│   ├── cardkingdom.rs   — Card Kingdom direct pricelist parsing (live buylist + qty)
+│   ├── write_timings.rs — Per-table write timing instrumentation
+│   ├── repository.rs    — price/price_history/granular_price queries + retention
+│   └── service.rs       — Price ingestion, CK-direct enrichment, retention, cleanup
+├── sealed_product/      — domain / event_processor / mapper / repository / service (sealed products)
+├── portfolio/           — domain / repository / service (per-user summaries, snapshots, card performance)
+├── published_deck/      — domain / source (fbettega feed) / repository / service (tournament decks)
 ├── health_check/
 │   ├── models.rs        — Health check result types
 │   └── service.rs       — Data integrity checks
 └── utils/
-    ├── http_client.rs   — Reqwest-based Scryfall API client
+    ├── clock.rs         — today() (single UTC "today" for the whole crate)
+    ├── http_client.rs   — Reqwest client for MTGJSON + Card Kingdom (not Scryfall)
     ├── json.rs          — JSON helper utilities
     └── json_stream_parser.rs — Generic streaming JSON parser using actson
 ```
 
 ### Key Design Patterns
 
-**Streaming JSON parsing**: Card, sealed-product, and price ingestion use `JsonStreamParser<T, P>` with the `JsonEventProcessor` trait. This streams Scryfall's bulk data files (~200MB+) through actson without loading them into memory. Each module implements its own `EventProcessor` that emits batches. Cards and sealed products both come from `AllPrintings.json`, so `ingest.rs`'s `CardSealedEventProcessor` tees one stream to both extractors (each tracks its own depth/skip state) to avoid downloading + parsing that file twice.
+**Streaming JSON parsing**: Card, sealed-product, and price ingestion use `JsonStreamParser<T, P>` with the `JsonEventProcessor` trait. This streams MTGJSON's bulk data files (~200MB+) through actson without loading them into memory. Each module implements its own `EventProcessor` that emits batches. Cards and sealed products both come from `AllPrintings.json`, so `ingest.rs`'s `CardSealedEventProcessor` tees one stream to both extractors (each tracks its own depth/skip state) to avoid downloading + parsing that file twice.
 
 **Dependency injection via constructor**: `main.rs` wires up the dependency graph manually — `ConnectionPool` → services → `CliController`. Services take `Arc<ConnectionPool>` and `Arc<HttpClient>`.
 

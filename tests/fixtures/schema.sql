@@ -178,18 +178,97 @@ CREATE TABLE IF NOT EXISTS set_price_history (
 );
 
 -- Inventory table
+-- user_id is a plain column here (no users table in the fixture); the portfolio
+-- queries GROUP BY it.
 CREATE TABLE IF NOT EXISTS inventory (
     id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
     card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
     quantity INTEGER NOT NULL DEFAULT 0,
     foil_quantity INTEGER NOT NULL DEFAULT 0
 );
 
--- Portfolio value history table
+-- Portfolio value history table (mirrors web migration; user FK omitted - no
+-- users table in the fixture)
 CREATE TABLE IF NOT EXISTS portfolio_value_history (
-    id SERIAL PRIMARY KEY,
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id INTEGER NOT NULL,
     total_value NUMERIC(12,2) NOT NULL,
-    date DATE NOT NULL UNIQUE
+    total_cost NUMERIC(12,2),
+    total_cards INTEGER NOT NULL,
+    date DATE NOT NULL,
+    CONSTRAINT uq_portfolio_value_history_user_date UNIQUE (user_id, date)
+);
+
+-- Transaction ledger (buys/sells) - source for card-performance FIFO math
+CREATE TABLE IF NOT EXISTS "transaction" (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
+    type VARCHAR NOT NULL,
+    quantity INTEGER NOT NULL,
+    price_per_unit NUMERIC(10,2) NOT NULL,
+    is_foil BOOLEAN NOT NULL,
+    date DATE NOT NULL DEFAULT CURRENT_DATE,
+    source VARCHAR,
+    fees NUMERIC(10,2),
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Per-user portfolio summary (one row per user)
+CREATE TABLE IF NOT EXISTS portfolio_summary (
+    user_id INTEGER PRIMARY KEY,
+    total_value NUMERIC(12,2) NOT NULL,
+    total_cost NUMERIC(12,2),
+    total_realized_gain NUMERIC(12,2),
+    total_cards INTEGER NOT NULL,
+    total_quantity INTEGER NOT NULL,
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    refreshes_today INTEGER NOT NULL DEFAULT 0,
+    last_refresh_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    computation_method VARCHAR(10) NOT NULL DEFAULT 'average'
+);
+
+-- Per-user, per-card performance rows
+CREATE TABLE IF NOT EXISTS portfolio_card_performance (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    card_id VARCHAR NOT NULL REFERENCES card(id) ON DELETE CASCADE,
+    is_foil BOOLEAN NOT NULL,
+    quantity INTEGER NOT NULL,
+    total_cost NUMERIC(10,2) NOT NULL,
+    average_cost NUMERIC(10,2) NOT NULL,
+    current_value NUMERIC(10,2) NOT NULL,
+    unrealized_gain NUMERIC(10,2) NOT NULL,
+    realized_gain NUMERIC(10,2) NOT NULL,
+    roi_percent NUMERIC(8,2),
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_portfolio_card_performance UNIQUE (user_id, card_id, is_foil)
+);
+
+-- Read-only tournament-deck catalog (fbettega feed)
+CREATE TABLE IF NOT EXISTS published_deck (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source VARCHAR NOT NULL,
+    source_uri VARCHAR NOT NULL,
+    tournament_name VARCHAR,
+    tournament_date DATE,
+    format VARCHAR,
+    archetype VARCHAR,
+    player VARCHAR,
+    result VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_published_deck_source UNIQUE (source, source_uri)
+);
+
+CREATE TABLE IF NOT EXISTS published_deck_card (
+    published_deck_id INTEGER NOT NULL REFERENCES published_deck(id) ON DELETE CASCADE,
+    card_id VARCHAR NOT NULL REFERENCES card(id) ON DELETE CASCADE,
+    quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    is_sideboard BOOLEAN NOT NULL DEFAULT false,
+    PRIMARY KEY (published_deck_id, card_id, is_sideboard)
 );
 
 -- Sealed product table

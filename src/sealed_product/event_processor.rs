@@ -68,7 +68,7 @@ impl JsonEventProcessor<SealedProduct> for SealedProductEventProcessor {
             JsonEvent::FieldName => self.handle_field_name(parser),
             JsonEvent::ValueString => {
                 let value = parser.current_str().unwrap_or_default();
-                self.handle_string_value(&value)
+                self.handle_string_value(value)
             }
             JsonEvent::ValueInt => {
                 let value = parser.current_int::<i64>()?.to_string();
@@ -207,7 +207,7 @@ impl SealedProductEventProcessor {
                     self.current_sealed_json.push(',');
                 }
                 self.current_sealed_json.push('"');
-                self.current_sealed_json.push_str(&field_name);
+                self.current_sealed_json.push_str(field_name);
                 self.current_sealed_json.push('"');
                 self.current_sealed_json.push(':');
             }

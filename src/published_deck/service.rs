@@ -45,7 +45,10 @@ impl PublishedDeckService {
                     continue;
                 }
             };
-            info!("published-deck ingest: {name} returned {} decks", decks.len());
+            info!(
+                "published-deck ingest: {name} returned {} decks",
+                decks.len()
+            );
 
             let resolved = self.resolve_names(&decks).await?;
 
@@ -84,7 +87,10 @@ impl PublishedDeckService {
     /// Map a deck's lines to resolved card rows, aggregating by (card_id, board)
     /// so the same representative printing never collides. Returns the resolved
     /// rows plus the count of lines whose name could not be resolved.
-    fn resolve_deck(deck: &RawDeck, resolved: &HashMap<String, String>) -> (Vec<ResolvedCard>, usize) {
+    fn resolve_deck(
+        deck: &RawDeck,
+        resolved: &HashMap<String, String>,
+    ) -> (Vec<ResolvedCard>, usize) {
         let mut agg: HashMap<(String, bool), i32> = HashMap::new();
         let mut unresolved = 0;
         for line in &deck.lines {
@@ -113,7 +119,11 @@ mod tests {
     use crate::published_deck::domain::DeckLine;
 
     fn line(name: &str, count: i32, side: bool) -> DeckLine {
-        DeckLine { card_name: name.to_string(), count, is_sideboard: side }
+        DeckLine {
+            card_name: name.to_string(),
+            count,
+            is_sideboard: side,
+        }
     }
 
     #[test]

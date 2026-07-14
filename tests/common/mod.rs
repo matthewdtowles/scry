@@ -49,6 +49,8 @@ pub fn create_test_set(code: &str) -> Set {
     }
 }
 
+// Shared across integration-test binaries; not every binary uses every helper.
+#[allow(dead_code)]
 pub fn create_test_card(id: &str, set_code: &str) -> Card {
     Card {
         artist: Some("Test Artist".to_string()),

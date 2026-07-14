@@ -58,25 +58,31 @@ impl PublishedDeckRepository {
         sep.push_bind(&deck.format);
         sep.push_bind(&deck.player);
         sep.push_bind(&deck.result);
-        qb.push(", NOW()) ON CONFLICT (source, source_uri) DO UPDATE SET \
+        qb.push(
+            ", NOW()) ON CONFLICT (source, source_uri) DO UPDATE SET \
              tournament_name = EXCLUDED.tournament_name, \
              tournament_date = EXCLUDED.tournament_date, \
              format = EXCLUDED.format, \
              player = EXCLUDED.player, \
              result = EXCLUDED.result, \
              updated_at = NOW() \
-             RETURNING id");
+             RETURNING id",
+        );
 
         let rows: Vec<(i32,)> = self.db.fetch_all_query_builder(qb).await?;
         // The upsert always RETURNs a row today; treat a missing id as an error
         // (rather than a silent success) so the caller logs and moves on instead
         // of leaving the deck's card rows stale.
         let Some((deck_id,)) = rows.into_iter().next() else {
-            anyhow::bail!("published_deck upsert returned no id for {}", deck.source_uri);
+            anyhow::bail!(
+                "published_deck upsert returned no id for {}",
+                deck.source_uri
+            );
         };
 
         // Replace children so re-ingesting a changed deck stays consistent.
-        let mut del = QueryBuilder::new("DELETE FROM published_deck_card WHERE published_deck_id = ");
+        let mut del =
+            QueryBuilder::new("DELETE FROM published_deck_card WHERE published_deck_id = ");
         del.push_bind(deck_id);
         self.db.execute_query_builder(del).await?;
 

@@ -16,6 +16,11 @@ use actson::{JsonEvent, JsonParser};
 use anyhow::Result;
 
 /// One record extracted from a single pass over `AllPrintings.json`.
+///
+/// `Card` is much larger than `Sealed`, but boxing it to even the variants out
+/// would add a heap allocation per card across the whole catalog on the ingest
+/// hot path - the padding in a bounded batch Vec is the cheaper trade.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum IngestRecord {
     Card(Card),
@@ -149,7 +154,11 @@ mod tests {
 
         assert_eq!(cards.len(), 1, "single pass should extract the one card");
         assert_eq!(cards[0].id, "card-uuid-1");
-        assert_eq!(sealed.len(), 1, "single pass should extract the one product");
+        assert_eq!(
+            sealed.len(),
+            1,
+            "single pass should extract the one product"
+        );
         assert_eq!(sealed[0].uuid, "sealed-uuid-1");
         assert_eq!(sealed[0].set_code, "tst");
     }

@@ -216,7 +216,7 @@ impl PriceService {
             return Ok(());
         }
         if let Some(max_date) = price_dates.iter().max() {
-            let max_date = max_date.clone();
+            let max_date = *max_date;
             price_dates.retain(|d| d != &max_date);
         }
         if price_dates.is_empty() {
@@ -232,7 +232,7 @@ impl PriceService {
     pub async fn prices_are_current(&self) -> Result<bool> {
         let price_dates = self.repository.fetch_price_dates().await?;
         let expected_date = Price::expected_latest_available_date();
-        Ok(price_dates.iter().max().map(|d| *d) == Some(expected_date))
+        Ok(price_dates.iter().max().copied() == Some(expected_date))
     }
 
     pub async fn fetch_history_size(&self) -> Result<String> {
