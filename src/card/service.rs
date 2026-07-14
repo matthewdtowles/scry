@@ -3,44 +3,52 @@ use crate::{
         domain::{Card, MainSetClassifier},
         event_processor::CardEventProcessor,
         mapper::CardMapper,
+        ports::{CardDataSource, CardRepositoryPort},
         repository::CardRepository,
     },
     database::ConnectionPool,
-    ingest::{CardSealedEventProcessor, IngestRecord},
     price::service::PriceService,
-    sealed_product::{
-        domain::SealedProduct, repository::SealedProductRepository, service::SealedProductService,
-    },
     utils::{HttpClient, JsonStreamParser},
 };
 use anyhow::Result;
 use serde_json::Value;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 pub struct CardService {
-    client: Arc<HttpClient>,
-    repository: CardRepository,
-    price_service: Arc<PriceService>,
+    data_source: Arc<dyn CardDataSource>,
+    repository: Arc<dyn CardRepositoryPort>,
 }
 
 impl CardService {
-    const BATCH_SIZE: usize = 500;
+    pub(crate) const BATCH_SIZE: usize = 500;
 
-    pub fn new(
-        db: Arc<ConnectionPool>,
-        http_client: Arc<HttpClient>,
-        price_service: Arc<PriceService>,
+    pub fn new(db: Arc<ConnectionPool>, http_client: Arc<HttpClient>) -> Self {
+        Self::with_ports(http_client, Arc::new(CardRepository::new(db)))
+    }
+
+    /// Construct from explicit ports; used by tests to inject fakes (a canned
+    /// data source + an in-memory repository) instead of live HTTP + Postgres.
+    pub fn with_ports(
+        data_source: Arc<dyn CardDataSource>,
+        repository: Arc<dyn CardRepositoryPort>,
     ) -> Self {
         Self {
-            client: http_client,
-            repository: CardRepository::new(db),
-            price_service,
+            data_source,
+            repository,
         }
+    }
+
+    /// The card persistence port (cheap `Arc` clone), for the single-pass
+    /// card+sealed ingest orchestrated in [`crate::cli::ingest_pipeline`].
+    pub(crate) fn repository(&self) -> Arc<dyn CardRepositoryPort> {
+        self.repository.clone()
+    }
+
+    /// The `AllPrintings.json` byte stream, for the single-pass ingest above.
+    pub(crate) async fn all_cards_stream(&self) -> Result<crate::card::ports::ByteStream> {
+        self.data_source.all_cards_stream().await
     }
 
     pub async fn fetch_count(&self) -> Result<u64> {
@@ -57,7 +65,7 @@ impl CardService {
 
     pub async fn ingest_set_cards(&self, set_code: &str) -> Result<i64> {
         debug!("Starting card ingestion for set: {}", set_code);
-        let raw_data: Value = self.client.fetch_set_cards(set_code).await?;
+        let raw_data: Value = self.data_source.fetch_set_cards(set_code).await?;
         let parsed = CardMapper::map_to_cards(raw_data)?;
         if parsed.is_empty() {
             warn!("No cards found for set: {}", set_code);
@@ -76,7 +84,7 @@ impl CardService {
 
     pub async fn ingest_all(&self) -> Result<()> {
         debug!("Start ingestion of all cards");
-        let byte_stream = self.client.all_cards_stream().await?;
+        let byte_stream = self.data_source.all_cards_stream().await?;
         debug!("Received byte stream for all cards");
         let event_processor = CardEventProcessor::new(Self::BATCH_SIZE);
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
@@ -95,8 +103,12 @@ impl CardService {
     /// if the set isn't in the DB yet, merge/filter, then save cards +
     /// legalities in bind-parameter-safe chunks. The stream parser hands batches
     /// to us one at a time, so this runs sequentially. Shared by
-    /// [`Self::ingest_all`] and [`Self::ingest_all_with_sealed`].
-    async fn save_card_batch(repo: &CardRepository, batch: Vec<Card>) -> Result<()> {
+    /// [`Self::ingest_all`] and the single-pass ingest in
+    /// [`crate::cli::ingest_pipeline`].
+    pub(crate) async fn save_card_batch(
+        repo: &Arc<dyn CardRepositoryPort>,
+        batch: Vec<Card>,
+    ) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
         }
@@ -113,73 +125,6 @@ impl CardService {
         Ok(())
     }
 
-    /// Single-pass sibling of [`Self::ingest_all`]: ingests cards **and** sealed
-    /// products from one `AllPrintings.json` stream via the tee processor in
-    /// [`crate::ingest`], so the file is downloaded + tokenized once instead of
-    /// twice. The card path is identical to `ingest_all` (shared
-    /// `save_card_batch`); sealed products are filtered to known set codes and
-    /// saved through `sealed_repo`. Returns the number of sealed products saved.
-    pub async fn ingest_all_with_sealed(
-        &self,
-        sealed_repo: SealedProductRepository,
-        valid_set_codes: HashSet<String>,
-    ) -> Result<i64> {
-        debug!("Start single-pass ingestion of cards + sealed products");
-        let valid_set_codes = Arc::new(valid_set_codes);
-        let byte_stream = self.client.all_cards_stream().await?;
-        let event_processor =
-            CardSealedEventProcessor::new(Self::BATCH_SIZE, SealedProductService::BATCH_SIZE);
-        let mut json_stream_parser = JsonStreamParser::new(event_processor);
-        let repo = self.repository.clone();
-        let sealed_total = Arc::new(Mutex::new(0i64));
-        let sealed_total_for_closure = sealed_total.clone();
-        json_stream_parser
-            .parse_stream(byte_stream, move |batch| {
-                let repo = repo.clone();
-                let sealed_repo = sealed_repo.clone();
-                let valid_set_codes = valid_set_codes.clone();
-                let sealed_total = sealed_total_for_closure.clone();
-                Box::pin(async move {
-                    // In practice each batch is homogeneous (only one extractor
-                    // flushes per event), but split by variant to be safe.
-                    let mut cards: Vec<Card> = Vec::new();
-                    let mut sealed: Vec<SealedProduct> = Vec::new();
-                    for record in batch {
-                        match record {
-                            IngestRecord::Card(c) => cards.push(c),
-                            IngestRecord::Sealed(s) => sealed.push(s),
-                        }
-                    }
-                    if !cards.is_empty() {
-                        Self::save_card_batch(&repo, cards).await?;
-                    }
-                    if !sealed.is_empty() {
-                        let set_code = sealed[0].set_code.clone();
-                        let filtered: Vec<SealedProduct> = sealed
-                            .into_iter()
-                            .filter(|p| valid_set_codes.contains(&p.set_code))
-                            .collect();
-                        if !filtered.is_empty() {
-                            match sealed_repo.save(&filtered).await {
-                                Ok(count) => {
-                                    let mut lock = sealed_total.lock().await;
-                                    *lock += count;
-                                }
-                                Err(e) => warn!(
-                                    "Failed to save sealed products for set {}: {:#}",
-                                    set_code, e
-                                ),
-                            }
-                        }
-                    }
-                    Ok(())
-                })
-            })
-            .await?;
-        let final_total = *sealed_total.lock().await;
-        Ok(final_total)
-    }
-
     /// Wipe the entire MTG catalog for a full re-ingest (`ingest -r`).
     pub async fn reset_all_data(&self) -> Result<()> {
         debug!("Resetting all MTG catalog data.");
@@ -188,7 +133,7 @@ impl CardService {
 
     pub async fn cleanup_cards(&self, batch_size: i64) -> Result<u64> {
         debug!("Starting streaming cleanup");
-        let byte_stream = self.client.all_cards_stream().await?;
+        let byte_stream = self.data_source.all_cards_stream().await?;
         let event_processor = CardEventProcessor::new(Self::BATCH_SIZE);
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         let repo = self.repository.clone();
@@ -245,7 +190,10 @@ impl CardService {
             .await
     }
 
-    pub async fn prune_duplicate_foils(&self) -> Result<i64> {
+    /// Pricing-aware dedup: `price_service` is passed in by the ingest pipeline
+    /// (the application layer that owns both services) rather than held as a
+    /// field, so `CardService` doesn't depend on the price module to construct.
+    pub async fn prune_duplicate_foils(&self, price_service: &PriceService) -> Result<i64> {
         let dup_foil_sets: Vec<&str> = vec![
             "40k", "7ed", "8ed", "9ed", "10e", "frf", "ons", "shm", "stx", "thb", "unh",
         ];
@@ -276,10 +224,7 @@ impl CardService {
             }
             price_ids.sort();
             price_ids.dedup();
-            let prices = self
-                .price_service
-                .fetch_prices_for_card_ids(&price_ids)
-                .await?;
+            let prices = price_service.fetch_prices_for_card_ids(&price_ids).await?;
             for non_ascii in non_ascii_cards {
                 if let Some(ascii) = ascii_by_name.get(non_ascii.name.as_str()) {
                     if non_ascii.has_foil {
@@ -293,16 +238,14 @@ impl CardService {
                     if let Some((_, Some(src_foil))) = non_price {
                         match ascii_price {
                             Some((_, None)) => {
-                                let _ = self
-                                    .price_service
+                                let _ = price_service
                                     .update_price_foil_if_null(&ascii.id, src_foil)
                                     .await?;
                             }
                             None => {
                                 let normal_opt = non_price.and_then(|p| p.0);
                                 let foil_opt = Some(*src_foil);
-                                let _ = self
-                                    .price_service
+                                let _ = price_service
                                     .insert_price_for_card(&ascii.id, normal_opt, foil_opt)
                                     .await?;
                             }
@@ -396,6 +339,120 @@ impl CardService {
 mod tests {
     use super::*;
     use crate::card::domain::CardRarity;
+    use crate::card::ports::ByteStream;
+    use async_trait::async_trait;
+    use std::sync::Mutex as StdMutex;
+
+    /// A one-set `AllPrintings.json` fragment with a single card.
+    const SAMPLE_ALL_PRINTINGS: &str = r#"{
+      "data": {
+        "TST": {
+          "name": "Test Set",
+          "type": "expansion",
+          "cards": [
+            {
+              "uuid": "card-uuid-1",
+              "name": "Test Card",
+              "setCode": "TST",
+              "number": "1",
+              "type": "Creature",
+              "rarity": "common",
+              "identifiers": {"scryfallId": "scry-abc-1"}
+            }
+          ]
+        }
+      }
+    }"#;
+
+    /// Feeds a canned byte stream instead of hitting MTGJSON.
+    struct FakeDataSource(&'static str);
+
+    #[async_trait]
+    impl CardDataSource for FakeDataSource {
+        async fn all_cards_stream(&self) -> Result<ByteStream> {
+            let bytes = bytes::Bytes::from(self.0);
+            Ok(Box::pin(futures::stream::once(async move {
+                Ok::<_, reqwest::Error>(bytes)
+            })))
+        }
+        async fn fetch_set_cards(&self, _set_code: &str) -> Result<Value> {
+            unimplemented!("not exercised by these tests")
+        }
+    }
+
+    /// Records the ids handed to `save_cards`; other methods are unused here.
+    #[derive(Default)]
+    struct SpyRepo {
+        saved: StdMutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl CardRepositoryPort for SpyRepo {
+        async fn set_exists(&self, _code: &str) -> Result<bool> {
+            Ok(true)
+        }
+        async fn save_cards(&self, cards: &[Card]) -> Result<i64> {
+            let mut saved = self.saved.lock().unwrap();
+            for c in cards {
+                saved.push(c.id.clone());
+            }
+            Ok(cards.len() as i64)
+        }
+        async fn save_legalities(&self, _cards: &[Card]) -> Result<i64> {
+            Ok(0)
+        }
+        async fn count(&self) -> Result<u64> {
+            unimplemented!()
+        }
+        async fn count_for_sets(&self, _main_only: bool) -> Result<Vec<(String, i64)>> {
+            unimplemented!()
+        }
+        async fn legality_count(&self) -> Result<u64> {
+            unimplemented!()
+        }
+        async fn fetch_foreign_unpriced_ids(&self) -> Result<Vec<String>> {
+            unimplemented!()
+        }
+        async fn delete_cards_batch(&self, _ids: &[String], _batch_size: i64) -> Result<i64> {
+            unimplemented!()
+        }
+        async fn fetch_non_ascii_numbers_in_set(&self, _set_code: &str) -> Result<Vec<Card>> {
+            unimplemented!()
+        }
+        async fn fetch_ascii_cards_by_set_and_names(
+            &self,
+            _set_code: &str,
+            _names: &[String],
+        ) -> Result<Vec<Card>> {
+            unimplemented!()
+        }
+        async fn fetch_in_main_cards_for_set_types(
+            &self,
+            _set_types: &[&str],
+        ) -> Result<Vec<Card>> {
+            unimplemented!()
+        }
+        async fn fetch_misclassified_as_in_main(&self) -> Result<Vec<Card>> {
+            unimplemented!()
+        }
+        async fn reset_all_data(&self) -> Result<()> {
+            unimplemented!()
+        }
+    }
+
+    /// The port refactor's payoff: `ingest_all` streams + parses + persists with
+    /// no live HTTP or Postgres - a fake data source and a spy repository.
+    #[tokio::test]
+    async fn ingest_all_saves_parsed_cards_through_ports() {
+        let repo = Arc::new(SpyRepo::default());
+        let service =
+            CardService::with_ports(Arc::new(FakeDataSource(SAMPLE_ALL_PRINTINGS)), repo.clone());
+
+        service.ingest_all().await.unwrap();
+
+        let saved = repo.saved.lock().unwrap();
+        assert_eq!(saved.as_slice(), &["card-uuid-1".to_string()]);
+    }
 
     fn create_test_card(id: &str) -> Card {
         Card {
