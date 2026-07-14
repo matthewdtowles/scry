@@ -248,7 +248,6 @@ async fn test_delete_card_with_price_history_cascades() {
         .unwrap();
     price_repo
         .save_price_history(&[Price {
-            id: None,
             card_id: "c08-c1".to_string(),
             normal: Some(Decimal::new(150, 2)),
             foil: Some(Decimal::new(300, 2)),
