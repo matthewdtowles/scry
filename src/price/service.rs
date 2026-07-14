@@ -208,23 +208,13 @@ impl PriceService {
         Ok(())
     }
 
-    /// Remove all old prices from db
+    /// Remove all prices older than the latest price date, in one statement (§5).
     pub async fn clean_up_prices(&self) -> Result<()> {
-        let mut price_dates = self.repository.fetch_price_dates().await?;
-        if price_dates.is_empty() {
-            warn!("No dates found in price table.");
-            return Ok(());
-        }
-        if let Some(max_date) = price_dates.iter().max() {
-            let max_date = *max_date;
-            price_dates.retain(|d| d != &max_date);
-        }
-        if price_dates.is_empty() {
+        let deleted = self.repository.delete_prices_before_latest().await?;
+        if deleted == 0 {
             info!("No old prices found in price table.");
-            return Ok(());
-        }
-        for d in price_dates {
-            self.repository.delete_by_date(d).await?;
+        } else {
+            info!("Removed {deleted} old price rows.");
         }
         Ok(())
     }

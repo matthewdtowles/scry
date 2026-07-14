@@ -7,7 +7,6 @@ use sqlx::FromRow;
 
 #[derive(Clone, Debug, FromRow, Serialize, Deserialize)]
 pub struct Price {
-    pub id: Option<i32>,
     pub card_id: String,
     pub foil: Option<Decimal>,
     pub normal: Option<Decimal>,
@@ -36,7 +35,6 @@ impl Price {
             }
         }
         Ok(Self {
-            id: None,
             card_id,
             foil,
             normal,

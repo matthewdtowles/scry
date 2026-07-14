@@ -220,7 +220,6 @@ impl CardRepository {
         let mut delete_qb = QueryBuilder::new("DELETE FROM legality WHERE card_id = ANY(");
         delete_qb.push_bind(card_ids.clone());
         delete_qb.push(")");
-        self.db.execute_query_builder(delete_qb).await?;
         let mut ids: Vec<String> = Vec::with_capacity(legalities.len());
         let mut formats: Vec<String> = Vec::with_capacity(legalities.len());
         let mut statuses: Vec<String> = Vec::with_capacity(legalities.len());
@@ -240,8 +239,9 @@ impl CardRepository {
         qb.push(", ");
         qb.push_bind(statuses);
         qb.push(") AS u(card_id, format, status) JOIN card c ON c.id = u.card_id");
-        let inserted = self.db.execute_query_builder(qb).await?;
-        Ok(inserted)
+        // DELETE + INSERT in one transaction so a crash between them can't strip
+        // a card of all legalities and leave it that way (§6).
+        self.db.execute_query_builders_tx(vec![delete_qb, qb]).await
     }
 
     pub async fn count(&self) -> Result<u64> {

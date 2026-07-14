@@ -145,7 +145,12 @@ impl FbettegaSource {
             .tournament
             .date
             .as_deref()
-            .and_then(|d| NaiveDate::parse_from_str(&d[..d.len().min(10)], "%Y-%m-%d").ok());
+            .and_then(|d| {
+                // Take the first 10 chars (YYYY-MM-DD) without byte-slicing, which
+                // would panic if a malformed value had a multi-byte char at byte 10.
+                let prefix: String = d.chars().take(10).collect();
+                NaiveDate::parse_from_str(&prefix, "%Y-%m-%d").ok()
+            });
         let format = item
             .tournament
             .formats
