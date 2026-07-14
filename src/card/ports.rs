@@ -41,7 +41,7 @@ pub trait CardRepositoryPort: Send + Sync {
     async fn count_for_sets(&self, main_only: bool) -> Result<Vec<(String, i64)>>;
     async fn legality_count(&self) -> Result<u64>;
     async fn save_cards(&self, cards: &[Card]) -> Result<i64>;
-    async fn save_legalities(&self, cards: &[Card]) -> Result<i64>;
+    async fn save_legalities(&self, cards: &[Card]) -> Result<()>;
     async fn set_exists(&self, code: &str) -> Result<bool>;
     async fn fetch_foreign_unpriced_ids(&self) -> Result<Vec<String>>;
     async fn delete_cards_batch(&self, ids: &[String], batch_size: i64) -> Result<i64>;
@@ -70,7 +70,7 @@ impl CardRepositoryPort for CardRepository {
     async fn save_cards(&self, cards: &[Card]) -> Result<i64> {
         CardRepository::save_cards(self, cards).await
     }
-    async fn save_legalities(&self, cards: &[Card]) -> Result<i64> {
+    async fn save_legalities(&self, cards: &[Card]) -> Result<()> {
         CardRepository::save_legalities(self, cards).await
     }
     async fn set_exists(&self, code: &str) -> Result<bool> {

@@ -34,7 +34,8 @@ impl ConnectionPool {
     /// Execute several statements in one transaction, in order, returning the
     /// total rows affected. Any failure rolls the whole batch back. Use this
     /// where a multi-statement write must be atomic (e.g. the DELETE+INSERT in
-    /// `save_legalities`, or the upsert+delete+insert in `save_deck`).
+    /// `save_legalities`, or the child-row DELETE+INSERT in `save_deck`; the
+    /// deck upsert stays separate because it needs its RETURNING id first).
     pub async fn execute_query_builders_tx(
         &self,
         builders: Vec<QueryBuilder<'_, Postgres>>,

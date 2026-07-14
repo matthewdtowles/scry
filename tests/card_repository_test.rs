@@ -76,8 +76,7 @@ async fn test_save_legalities() {
         .save_cards(std::slice::from_ref(&card))
         .await
         .unwrap();
-    let saved = card_repo.save_legalities(&[card]).await.unwrap();
-    assert!(saved > 0);
+    card_repo.save_legalities(&[card]).await.unwrap();
 
     let legality_count = card_repo.legality_count().await.unwrap();
     assert!(legality_count > 0);
