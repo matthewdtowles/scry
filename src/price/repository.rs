@@ -208,52 +208,22 @@ impl PriceRepository {
     }
 
     pub async fn apply_weekly_retention(&self) -> Result<i64> {
-        self.weekly_retention(Self::PRICE_HISTORY_TABLE).await
+        self.db.retain_weekly_tier(Self::PRICE_HISTORY_TABLE).await
     }
 
     pub async fn apply_monthly_retention(&self) -> Result<i64> {
-        self.monthly_retention(Self::PRICE_HISTORY_TABLE).await
+        self.db.retain_monthly_tier(Self::PRICE_HISTORY_TABLE).await
     }
 
     pub async fn apply_granular_weekly_retention(&self) -> Result<i64> {
-        self.weekly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE)
+        self.db
+            .retain_weekly_tier(Self::GRANULAR_PRICE_HISTORY_TABLE)
             .await
     }
 
     pub async fn apply_granular_monthly_retention(&self) -> Result<i64> {
-        self.monthly_retention(Self::GRANULAR_PRICE_HISTORY_TABLE)
-            .await
-    }
-
-    /// Weekly tier: in the 7-28 day window, keep only Mondays (DOW 1). Date-based
-    /// so it applies independently to every series in the table.
-    async fn weekly_retention(&self, table: &str) -> Result<i64> {
         self.db
-            .count(&format!(
-                "WITH deleted AS ( \
-                    DELETE FROM {table} \
-                    WHERE date >= CURRENT_DATE - INTERVAL '28 days' \
-                      AND date < CURRENT_DATE - INTERVAL '7 days' \
-                      AND EXTRACT(DOW FROM date) NOT IN (1) \
-                    RETURNING 1 \
-                ) \
-                SELECT COUNT(*) FROM deleted"
-            ))
-            .await
-    }
-
-    /// Monthly tier: beyond 28 days, keep only the 1st of each month.
-    async fn monthly_retention(&self, table: &str) -> Result<i64> {
-        self.db
-            .count(&format!(
-                "WITH deleted AS ( \
-                    DELETE FROM {table} \
-                    WHERE date < CURRENT_DATE - INTERVAL '28 days' \
-                      AND EXTRACT(DAY FROM date) != 1 \
-                    RETURNING 1 \
-                ) \
-                SELECT COUNT(*) FROM deleted"
-            ))
+            .retain_monthly_tier(Self::GRANULAR_PRICE_HISTORY_TABLE)
             .await
     }
 

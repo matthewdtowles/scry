@@ -222,32 +222,11 @@ impl SetRepository {
     }
 
     pub async fn apply_set_price_history_weekly_retention(&self) -> Result<i64> {
-        self.db
-            .count(
-                "WITH deleted AS ( \
-                    DELETE FROM set_price_history \
-                    WHERE date >= CURRENT_DATE - INTERVAL '28 days' \
-                      AND date < CURRENT_DATE - INTERVAL '7 days' \
-                      AND EXTRACT(DOW FROM date) NOT IN (1) \
-                    RETURNING 1 \
-                ) \
-                SELECT COUNT(*) FROM deleted",
-            )
-            .await
+        self.db.retain_weekly_tier("set_price_history").await
     }
 
     pub async fn apply_set_price_history_monthly_retention(&self) -> Result<i64> {
-        self.db
-            .count(
-                "WITH deleted AS ( \
-                    DELETE FROM set_price_history \
-                    WHERE date < CURRENT_DATE - INTERVAL '28 days' \
-                      AND EXTRACT(DAY FROM date) != 1 \
-                    RETURNING 1 \
-                ) \
-                SELECT COUNT(*) FROM deleted",
-            )
-            .await
+        self.db.retain_monthly_tier("set_price_history").await
     }
 
     pub async fn update_set_price_change_weekly(&self) -> Result<i64> {
