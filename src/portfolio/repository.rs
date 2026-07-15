@@ -238,12 +238,9 @@ impl PortfolioRepository {
             .into_iter()
             .collect();
         let mut delete_qb =
-            QueryBuilder::new("DELETE FROM portfolio_card_performance WHERE user_id IN (");
-        let mut separated = delete_qb.separated(", ");
-        for uid in &user_ids {
-            separated.push_bind(*uid);
-        }
-        separated.push_unseparated(")");
+            QueryBuilder::new("DELETE FROM portfolio_card_performance WHERE user_id = ANY(");
+        delete_qb.push_bind(&user_ids);
+        delete_qb.push(")");
         self.db.execute_query_builder(delete_qb).await?;
 
         // Insert new rows

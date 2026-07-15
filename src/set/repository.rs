@@ -127,14 +127,9 @@ impl SetRepository {
                 MAX(p.date) AS date
             FROM card c
             JOIN price p ON p.card_id = c.id
-            WHERE c.set_code IN ("
+            WHERE c.set_code = ANY("
         );
-        for (i, code) in codes.iter().enumerate() {
-            if i > 0 {
-                qb.push(",");
-            }
-            qb.push_bind(code);
-        }
+        qb.push_bind(codes);
         qb.push(") GROUP BY c.set_code");
         let set_prices: Vec<SetPrice> = self.db.fetch_all_query_builder(qb).await?;
         Ok(set_prices)

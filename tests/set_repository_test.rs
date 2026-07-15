@@ -437,3 +437,57 @@ async fn test_update_parent_codes_time_spiral_fixup() {
         .unwrap();
     assert_eq!(tsb_in_block, 1, "tsb should be in the Time Spiral block");
 }
+
+#[tokio::test]
+#[ignore]
+async fn test_calculate_set_prices_matches_by_set_code() {
+    // Covers the `set_code = ANY(...)` code list filter in calculate_set_prices.
+    use chrono::NaiveDate;
+    use rust_decimal::Decimal;
+    use scry::card::repository::CardRepository;
+    use scry::price::domain::Price;
+    use scry::price::repository::PriceRepository;
+
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+    let price_repo = PriceRepository::new(db);
+
+    set_repo
+        .save_sets(&[common::create_test_set("csp01")])
+        .await
+        .unwrap();
+    let card = common::create_test_card("csp01-c1", "csp01");
+    card_repo
+        .save_cards(std::slice::from_ref(&card))
+        .await
+        .unwrap();
+    price_repo
+        .save_prices(&[Price {
+            card_id: "csp01-c1".to_string(),
+            normal: Some(Decimal::try_from(2.50).unwrap()),
+            foil: Some(Decimal::try_from(5.00).unwrap()),
+            date: NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
+        }])
+        .await
+        .unwrap();
+
+    // Passing a multi-element array also exercises the ANY(...) bind.
+    let set_prices = set_repo
+        .calculate_set_prices(&["csp01".to_string(), "missing".to_string()])
+        .await
+        .unwrap();
+
+    let sp = set_prices
+        .iter()
+        .find(|s| s.set_code == "csp01")
+        .expect("a set price row for csp01");
+    // base/total use COALESCE(normal, foil, 0) = 2.50 (normal is present).
+    assert_eq!(sp.base_price, Decimal::try_from(2.50).unwrap());
+    assert_eq!(sp.total_price, Decimal::try_from(2.50).unwrap());
+    // *_all sum normal + foil = 7.50.
+    assert_eq!(sp.base_price_all, Decimal::try_from(7.50).unwrap());
+    assert_eq!(sp.total_price_all, Decimal::try_from(7.50).unwrap());
+    // The non-existent code must not appear.
+    assert!(!set_prices.iter().any(|s| s.set_code == "missing"));
+}
