@@ -180,9 +180,7 @@ impl SetService {
         let batch_size = 200usize;
         for chunk in set_prices.chunks(batch_size) {
             total += self.repository.update_prices(chunk.to_vec()).await?;
-        }
-        // Also save to set_price_history
-        for chunk in set_prices.chunks(batch_size) {
+            // Snapshot the same chunk into set_price_history in the same pass.
             self.repository
                 .save_set_price_history(chunk.to_vec())
                 .await?;
