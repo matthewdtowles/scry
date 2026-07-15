@@ -494,10 +494,11 @@ async fn test_calculate_set_prices_matches_by_set_code() {
 
 #[tokio::test]
 #[ignore]
-async fn test_update_prices_and_history_go_through_set_price_insert() {
-    // Covers both callers of the shared set_price_insert helper (§4.3/§4.4):
-    // update_prices (ON CONFLICT set_code) and save_set_price_history
-    // (ON CONFLICT set_code,date), including the upsert paths.
+async fn test_update_prices_upserts_on_code_and_history_keys_on_date() {
+    // Exercises both callers of the shared set_price_insert helper (§4.3/§4.4)
+    // and asserts their observable upsert semantics: update_prices upserts on
+    // set_code (one row, latest value); save_set_price_history keys on
+    // (set_code, date) (one row per date).
     use chrono::NaiveDate;
     use rust_decimal::Decimal;
     use scry::set::domain::SetPrice;

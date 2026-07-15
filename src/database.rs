@@ -68,7 +68,7 @@ impl ConnectionPool {
     /// `table` is a trusted, caller-owned constant (a history table name) - never
     /// user input. Table identifiers cannot be bound as parameters, so it is
     /// interpolated; routing caller input through here would be an injection.
-    pub async fn retain_weekly_tier(&self, table: &str) -> Result<i64> {
+    pub(crate) async fn retain_weekly_tier(&self, table: &str) -> Result<i64> {
         self.count(&format!(
             "WITH deleted AS ( \
                 DELETE FROM {table} \
@@ -85,7 +85,7 @@ impl ConnectionPool {
     /// Monthly tier of the shared price-history retention policy (§4.2): beyond
     /// 28 days, keep only the 1st of each month. Returns the rows deleted.
     /// Same trusted-constant contract on `table` as [`Self::retain_weekly_tier`].
-    pub async fn retain_monthly_tier(&self, table: &str) -> Result<i64> {
+    pub(crate) async fn retain_monthly_tier(&self, table: &str) -> Result<i64> {
         self.count(&format!(
             "WITH deleted AS ( \
                 DELETE FROM {table} \
