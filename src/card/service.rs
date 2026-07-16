@@ -24,6 +24,14 @@ pub struct CardService {
 impl CardService {
     pub(crate) const BATCH_SIZE: usize = 500;
 
+    /// Sets that ship non-ASCII-numbered foil variants (starred/etched promos)
+    /// alongside an ASCII-numbered sibling of the same name. `prune_duplicate_foils`
+    /// folds each variant into its sibling. Policy list, kept here rather than
+    /// inline in the method body.
+    const DUP_FOIL_SETS: &[&str] = &[
+        "40k", "7ed", "8ed", "9ed", "10e", "frf", "ons", "shm", "stx", "thb", "unh",
+    ];
+
     pub fn new(db: Arc<ConnectionPool>, http_client: Arc<HttpClient>) -> Self {
         Self::with_ports(http_client, Arc::new(CardRepository::new(db)))
     }
@@ -194,11 +202,8 @@ impl CardService {
     /// (the application layer that owns both services) rather than held as a
     /// field, so `CardService` doesn't depend on the price module to construct.
     pub async fn prune_duplicate_foils(&self, price_service: &PriceService) -> Result<i64> {
-        let dup_foil_sets: Vec<&str> = vec![
-            "40k", "7ed", "8ed", "9ed", "10e", "frf", "ons", "shm", "stx", "thb", "unh",
-        ];
         let mut total_deleted = 0i64;
-        for set_code in dup_foil_sets {
+        for set_code in Self::DUP_FOIL_SETS {
             let non_ascii_cards = self
                 .repository
                 .fetch_non_ascii_numbers_in_set(set_code)
@@ -225,12 +230,18 @@ impl CardService {
             price_ids.sort();
             price_ids.dedup();
             let prices = price_service.fetch_prices_for_card_ids(&price_ids).await?;
+
+            // Accumulate the per-set writes and flush them in one round trip each
+            // rather than per card. Keyed by id so a sibling matched by several
+            // variants is saved once (and never violates ON CONFLICT).
+            let mut foil_updates: HashMap<String, Card> = HashMap::new();
+            let mut ids_to_delete: Vec<String> = Vec::new();
             for non_ascii in non_ascii_cards {
                 if let Some(ascii) = ascii_by_name.get(non_ascii.name.as_str()) {
                     if non_ascii.has_foil {
                         let mut ascii_clone = (*ascii).clone();
                         if ascii_clone.enable_foil_from(&non_ascii) {
-                            let _ = self.repository.save_cards(&[ascii_clone]).await?;
+                            foil_updates.insert(ascii_clone.id.clone(), ascii_clone);
                         }
                     }
                     let non_price = prices.get(&non_ascii.id);
@@ -252,15 +263,19 @@ impl CardService {
                             _ => {}
                         }
                     }
-                    let deleted = self
-                        .repository
-                        .delete_cards_batch(
-                            std::slice::from_ref(&non_ascii.id),
-                            Self::BATCH_SIZE as i64,
-                        )
-                        .await?;
-                    total_deleted += deleted;
+                    ids_to_delete.push(non_ascii.id.clone());
                 }
+            }
+
+            if !foil_updates.is_empty() {
+                let cards: Vec<Card> = foil_updates.into_values().collect();
+                self.repository.save_cards(&cards).await?;
+            }
+            if !ids_to_delete.is_empty() {
+                total_deleted += self
+                    .repository
+                    .delete_cards_batch(&ids_to_delete, Self::BATCH_SIZE as i64)
+                    .await?;
             }
         }
         Ok(total_deleted)
