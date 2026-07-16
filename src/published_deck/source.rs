@@ -3,6 +3,7 @@ use crate::utils::clock;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{Datelike, Duration, NaiveDate};
+use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration as StdDuration;
@@ -25,6 +26,9 @@ const REPO: &str = "fbettega/MTG_decklistcache";
 // Source folders inside Tournaments/. MTGO + Melee cover the competitive meta;
 // the others are additive.
 const FEEDS: &[&str] = &["MTGO", "MTGmelee", "Topdeck", "Manatrader", "CardsRealm"];
+/// Max concurrent file GETs. The listing calls stay sequential (few, and cheap);
+/// the per-file fetches are the bulk of the wall time, so bound-concurrency them.
+const FETCH_CONCURRENCY: usize = 8;
 
 /// Reads JSON tournament caches from the fbettega GitHub repo. Files are listed
 /// via the GitHub contents API (one call per source/day) and fetched from the
@@ -200,8 +204,9 @@ impl DecklistSource for FbettegaSource {
 
     async fn fetch_recent(&self, days: i64) -> Result<Vec<RawDeck>> {
         let today = clock::today();
-        let mut decks: Vec<RawDeck> = Vec::new();
 
+        // Phase 1: sequential directory listings collect the file download URLs.
+        let mut targets: Vec<(String, String)> = Vec::new();
         for offset in 0..days.max(1) {
             let day = today - Duration::days(offset);
             for feed in FEEDS {
@@ -225,13 +230,25 @@ impl DecklistSource for FbettegaSource {
                     let Some(url) = file.download_url else {
                         continue;
                     };
-                    match self.fetch_file(&url).await {
-                        Ok(item) => decks.extend(Self::to_raw_decks(item)),
-                        Err(e) => warn!("fbettega: failed to parse {}: {e}", file.name),
-                    }
+                    targets.push((file.name, url));
                 }
             }
         }
+
+        // Phase 2: fetch the files with bounded concurrency. A failed file is
+        // logged and skipped, same as before - only the ordering is now
+        // completion-order, which doesn't matter for the upsert downstream.
+        let decks: Vec<RawDeck> = stream::iter(targets)
+            .map(|(name, url)| async move { (name, self.fetch_file(&url).await) })
+            .buffer_unordered(FETCH_CONCURRENCY)
+            .fold(Vec::new(), |mut acc, (name, result)| async move {
+                match result {
+                    Ok(item) => acc.extend(Self::to_raw_decks(item)),
+                    Err(e) => warn!("fbettega: failed to parse {name}: {e}"),
+                }
+                acc
+            })
+            .await;
 
         debug!("fbettega: fetched {} decks over {days} days", decks.len());
         Ok(decks)
