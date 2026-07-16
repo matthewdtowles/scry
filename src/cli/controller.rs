@@ -73,12 +73,6 @@ impl CliController {
                     .await
             }
 
-            Commands::IngestCardsSealed {} => self
-                .pipeline()
-                .ingest_cards_and_sealed()
-                .await
-                .inspect_err(|e| error!("Combined card+sealed ingest failed: {}", e)),
-
             Commands::IngestDecks { days } => self
                 .pipeline()
                 .ingest_published_decks(days)
@@ -419,7 +413,7 @@ ONE-TIME SETUP
         info!("Current price_history: {} rows, {}", count, size);
 
         let confirmed = confirm_destructive(
-            "This will DELETE ALL DATA from price_history. Type 'y' to confirm",
+            "This will DELETE ALL DATA from price_history. Do you want to proceed?",
         );
 
         if !confirmed {
@@ -444,7 +438,7 @@ ONE-TIME SETUP
 
         if truncate {
             let confirmed = confirm_destructive(
-                "This will TRUNCATE price_history before backfill. Type 'y' to confirm",
+                "This will TRUNCATE price_history before backfill. Do you want to proceed?",
             );
             if !confirmed {
                 warn!("Aborted backfill.");

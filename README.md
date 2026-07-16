@@ -40,14 +40,6 @@ scry ingest -r           # Reset all data before ingesting (requires confirmatio
 
 Flags can be combined, e.g. `scry ingest -s -p` to ingest sets and prices. Requesting both cards and sealed products shares the single `AllPrintings.json` pass; requesting only one runs that one's standalone stream.
 
-### `ingest-cards-sealed` — Cards + sealed products in one pass
-
-Ingests cards and sealed products together from a single `AllPrintings.json` stream (the same path the default `ingest` uses when both are due). Useful for refreshing just the catalog without re-running sets or prices. Sets must already be ingested.
-
-```bash
-scry ingest-cards-sealed
-```
-
 ### `post-ingest-prune` — Prune unwanted ingested data
 
 Removes foreign cards without prices, sets missing price data, empty sets, and duplicate foil cards. Runs automatically after `ingest`, but can be run standalone.
