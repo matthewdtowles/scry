@@ -61,6 +61,43 @@ impl ConnectionPool {
         Ok(count)
     }
 
+    /// Weekly tier of the shared price-history retention policy (§4.2): in the
+    /// 7-28 day window, keep only Mondays (DOW 1). Date-based, so it applies
+    /// independently to every series in the table. Returns the rows deleted.
+    ///
+    /// `table` is a trusted, caller-owned constant (a history table name) - never
+    /// user input. Table identifiers cannot be bound as parameters, so it is
+    /// interpolated; routing caller input through here would be an injection.
+    pub(crate) async fn retain_weekly_tier(&self, table: &str) -> Result<i64> {
+        self.count(&format!(
+            "WITH deleted AS ( \
+                DELETE FROM {table} \
+                WHERE date >= CURRENT_DATE - INTERVAL '28 days' \
+                  AND date < CURRENT_DATE - INTERVAL '7 days' \
+                  AND EXTRACT(DOW FROM date) NOT IN (1) \
+                RETURNING 1 \
+            ) \
+            SELECT COUNT(*) FROM deleted"
+        ))
+        .await
+    }
+
+    /// Monthly tier of the shared price-history retention policy (§4.2): beyond
+    /// 28 days, keep only the 1st of each month. Returns the rows deleted.
+    /// Same trusted-constant contract on `table` as [`Self::retain_weekly_tier`].
+    pub(crate) async fn retain_monthly_tier(&self, table: &str) -> Result<i64> {
+        self.count(&format!(
+            "WITH deleted AS ( \
+                DELETE FROM {table} \
+                WHERE date < CURRENT_DATE - INTERVAL '28 days' \
+                  AND EXTRACT(DAY FROM date) != 1 \
+                RETURNING 1 \
+            ) \
+            SELECT COUNT(*) FROM deleted"
+        ))
+        .await
+    }
+
     pub async fn fetch_all_query_builder<T>(
         &self,
         mut query_builder: QueryBuilder<'_, Postgres>,

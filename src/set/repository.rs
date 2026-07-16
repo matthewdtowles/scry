@@ -3,7 +3,7 @@ use crate::{
     set::domain::{Set, SetPrice},
 };
 use anyhow::{Ok, Result};
-use sqlx::QueryBuilder;
+use sqlx::{Postgres, QueryBuilder};
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -135,15 +135,15 @@ impl SetRepository {
         Ok(set_prices)
     }
 
-    pub async fn update_prices(&self, set_prices: Vec<SetPrice>) -> Result<i64> {
-        if set_prices.is_empty() {
-            warn!("0 set prices given, 0 prices saved.");
-            return Ok(0);
-        }
-        let mut qb = QueryBuilder::new(
-            "INSERT INTO set_price (set_code, base_price, total_price, base_price_all, total_price_all, date)",
-        );
-        qb.push_values(&set_prices, |mut b, sp| {
+    /// Builds `INSERT INTO {table} (<set-price columns>) VALUES ...` with the
+    /// column list and the bind order in one place so they can't drift (§4.3/§4.4).
+    /// The caller appends its own `ON CONFLICT` clause. `table` is a trusted
+    /// constant (`set_price` / `set_price_history`), never user input.
+    fn set_price_insert<'a>(table: &str, set_prices: &'a [SetPrice]) -> QueryBuilder<'a, Postgres> {
+        let mut qb = QueryBuilder::new(format!(
+            "INSERT INTO {table} (set_code, base_price, total_price, base_price_all, total_price_all, date)"
+        ));
+        qb.push_values(set_prices, |mut b, sp| {
             b.push_bind(&sp.set_code)
                 .push_bind(sp.base_price)
                 .push_bind(sp.total_price)
@@ -151,6 +151,15 @@ impl SetRepository {
                 .push_bind(sp.total_price_all)
                 .push_bind(sp.date);
         });
+        qb
+    }
+
+    pub async fn update_prices(&self, set_prices: Vec<SetPrice>) -> Result<i64> {
+        if set_prices.is_empty() {
+            warn!("0 set prices given, 0 prices saved.");
+            return Ok(0);
+        }
+        let mut qb = Self::set_price_insert("set_price", &set_prices);
         qb.push(
             " ON CONFLICT (set_code) DO UPDATE SET
                 base_price = COALESCE(EXCLUDED.base_price, set_price.base_price),
@@ -173,17 +182,7 @@ impl SetRepository {
             warn!("0 set prices given, 0 set price history rows saved.");
             return Ok(0);
         }
-        let mut qb = QueryBuilder::new(
-            "INSERT INTO set_price_history (set_code, base_price, total_price, base_price_all, total_price_all, date)",
-        );
-        qb.push_values(&set_prices, |mut b, sp| {
-            b.push_bind(&sp.set_code)
-                .push_bind(sp.base_price)
-                .push_bind(sp.total_price)
-                .push_bind(sp.base_price_all)
-                .push_bind(sp.total_price_all)
-                .push_bind(sp.date);
-        });
+        let mut qb = Self::set_price_insert("set_price_history", &set_prices);
         qb.push(
             " ON CONFLICT (set_code, date) DO UPDATE SET
                 base_price = COALESCE(EXCLUDED.base_price, set_price_history.base_price),
@@ -222,32 +221,11 @@ impl SetRepository {
     }
 
     pub async fn apply_set_price_history_weekly_retention(&self) -> Result<i64> {
-        self.db
-            .count(
-                "WITH deleted AS ( \
-                    DELETE FROM set_price_history \
-                    WHERE date >= CURRENT_DATE - INTERVAL '28 days' \
-                      AND date < CURRENT_DATE - INTERVAL '7 days' \
-                      AND EXTRACT(DOW FROM date) NOT IN (1) \
-                    RETURNING 1 \
-                ) \
-                SELECT COUNT(*) FROM deleted",
-            )
-            .await
+        self.db.retain_weekly_tier("set_price_history").await
     }
 
     pub async fn apply_set_price_history_monthly_retention(&self) -> Result<i64> {
-        self.db
-            .count(
-                "WITH deleted AS ( \
-                    DELETE FROM set_price_history \
-                    WHERE date < CURRENT_DATE - INTERVAL '28 days' \
-                      AND EXTRACT(DAY FROM date) != 1 \
-                    RETURNING 1 \
-                ) \
-                SELECT COUNT(*) FROM deleted",
-            )
-            .await
+        self.db.retain_monthly_tier("set_price_history").await
     }
 
     pub async fn update_set_price_change_weekly(&self) -> Result<i64> {

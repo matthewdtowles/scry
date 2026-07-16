@@ -126,6 +126,11 @@ impl IngestPipeline<'_> {
                 }
             }
         }
+        // `--cards` already ingests every set, so `--set-cards` is subsumed by it.
+        // Warn instead of silently dropping it (§7).
+        if cards && set_cards.is_some() {
+            warn!("`--cards` ingests all sets' cards; `--set-cards` is redundant here and was skipped.");
+        }
         if !cards {
             if let Some(set_code) = &set_cards {
                 match self.card_service.ingest_set_cards(set_code).await {

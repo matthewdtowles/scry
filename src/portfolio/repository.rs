@@ -74,32 +74,11 @@ impl PortfolioRepository {
     }
 
     pub async fn apply_weekly_retention(&self) -> Result<i64> {
-        self.db
-            .count(
-                "WITH deleted AS ( \
-                    DELETE FROM portfolio_value_history \
-                    WHERE date >= CURRENT_DATE - INTERVAL '28 days' \
-                      AND date < CURRENT_DATE - INTERVAL '7 days' \
-                      AND EXTRACT(DOW FROM date) NOT IN (1) \
-                    RETURNING 1 \
-                ) \
-                SELECT COUNT(*) FROM deleted",
-            )
-            .await
+        self.db.retain_weekly_tier("portfolio_value_history").await
     }
 
     pub async fn apply_monthly_retention(&self) -> Result<i64> {
-        self.db
-            .count(
-                "WITH deleted AS ( \
-                    DELETE FROM portfolio_value_history \
-                    WHERE date < CURRENT_DATE - INTERVAL '28 days' \
-                      AND EXTRACT(DAY FROM date) != 1 \
-                    RETURNING 1 \
-                ) \
-                SELECT COUNT(*) FROM deleted",
-            )
-            .await
+        self.db.retain_monthly_tier("portfolio_value_history").await
     }
 
     /// Compute portfolio summary data per user (total value, total cards, total quantity)

@@ -491,3 +491,61 @@ async fn test_calculate_set_prices_matches_by_set_code() {
     // The non-existent code must not appear.
     assert!(!set_prices.iter().any(|s| s.set_code == "missing"));
 }
+
+#[tokio::test]
+#[ignore]
+async fn test_update_prices_upserts_on_code_and_history_keys_on_date() {
+    // Exercises both callers of the shared set_price_insert helper (§4.3/§4.4)
+    // and asserts their observable upsert semantics: update_prices upserts on
+    // set_code (one row, latest value); save_set_price_history keys on
+    // (set_code, date) (one row per date).
+    use chrono::NaiveDate;
+    use rust_decimal::Decimal;
+    use scry::set::domain::SetPrice;
+
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db.clone());
+    repo.save_sets(&[common::create_test_set("spi01")])
+        .await
+        .unwrap();
+
+    let make = |base: i64, date: (i32, u32, u32)| SetPrice {
+        set_code: "spi01".to_string(),
+        base_price: Decimal::new(base, 2),
+        total_price: Decimal::new(base + 100, 2),
+        base_price_all: Decimal::new(base + 200, 2),
+        total_price_all: Decimal::new(base + 300, 2),
+        date: NaiveDate::from_ymd_opt(date.0, date.1, date.2).unwrap(),
+    };
+
+    // Insert, then upsert on the same set_code -> still one row, updated value.
+    repo.update_prices(vec![make(150, (2024, 6, 15))])
+        .await
+        .unwrap();
+    repo.update_prices(vec![make(275, (2024, 6, 16))])
+        .await
+        .unwrap();
+    let rows = db
+        .count("SELECT COUNT(*) FROM set_price WHERE set_code = 'spi01'")
+        .await
+        .unwrap();
+    assert_eq!(rows, 1, "update_prices upserts on set_code");
+    let updated = db
+        .count("SELECT COUNT(*) FROM set_price WHERE set_code = 'spi01' AND base_price = 2.75")
+        .await
+        .unwrap();
+    assert_eq!(updated, 1, "second update_prices overwrote base_price");
+
+    // History keys on (set_code, date) -> two distinct dates -> two rows.
+    repo.save_set_price_history(vec![make(150, (2024, 6, 15))])
+        .await
+        .unwrap();
+    repo.save_set_price_history(vec![make(275, (2024, 6, 16))])
+        .await
+        .unwrap();
+    let hist = db
+        .count("SELECT COUNT(*) FROM set_price_history WHERE set_code = 'spi01'")
+        .await
+        .unwrap();
+    assert_eq!(hist, 2, "history keeps one row per (set_code, date)");
+}
