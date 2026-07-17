@@ -289,3 +289,48 @@ impl SealedProductEventProcessor {
         SealedProductMapper::map_single_item(&value, set_code)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::json_stream_parser::test_support::collect_batches;
+
+    const FIXTURE: &str = include_str!("../../tests/fixtures/all_printings_sample.json");
+
+    // ESC carries four sealed products: two valid, one online-only (MTGO —
+    // filtered), one without a name (unmappable — warn-and-skipped). The other
+    // sets have no sealedProduct array, so no further batches.
+    #[tokio::test]
+    async fn fixture_extracts_valid_products_and_filters_the_rest() {
+        let batches = collect_batches(SealedProductEventProcessor::new(500), FIXTURE).await;
+        assert_eq!(batches.len(), 1, "only ESC has sealed products");
+        let products = &batches[0];
+        assert_eq!(products.len(), 2);
+
+        let boxp = &products[0];
+        assert_eq!(boxp.uuid, "esc-sealed-0001");
+        assert_eq!(boxp.name, "Escape Draft Booster Box — \"Collector's\" Cut");
+        assert_eq!(boxp.set_code, "esc");
+        assert_eq!(boxp.category.as_deref(), Some("booster_box"));
+        assert_eq!(boxp.subtype.as_deref(), Some("draft"));
+        assert_eq!(boxp.card_count, Some(540));
+        assert_eq!(boxp.product_size, Some(36));
+        assert_eq!(boxp.tcgplayer_product_id.as_deref(), Some("600001"));
+        assert_eq!(
+            boxp.contents_summary.as_deref(),
+            Some("36x ESC default, Escape Spindown — \"Lucky\" Edition")
+        );
+
+        let bundle = &products[1];
+        assert_eq!(bundle.uuid, "esc-sealed-0002");
+        assert_eq!(bundle.contents_summary.as_deref(), Some("Escape Starter"));
+    }
+
+    // Unlike cards, sealed products flush mid-set once batch_size is reached.
+    #[tokio::test]
+    async fn fixture_flushes_mid_set_at_batch_size() {
+        let batches = collect_batches(SealedProductEventProcessor::new(1), FIXTURE).await;
+        let sizes: Vec<usize> = batches.iter().map(Vec::len).collect();
+        assert_eq!(sizes, vec![1, 1]);
+    }
+}

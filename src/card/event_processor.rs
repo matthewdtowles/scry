@@ -384,6 +384,92 @@ mod tests {
         Arc::try_unwrap(sizes).unwrap().into_inner().unwrap()
     }
 
+    /// Realistic AllPrintings-shaped document: alphabetical set keys (so `type`
+    /// follows `cards`, as in the real feed), a set-level `booster` blob,
+    /// escaping edge cases, split faces, an unmappable card, and an empty set.
+    const FIXTURE: &str = include_str!("../../tests/fixtures/all_printings_sample.json");
+
+    async fn fixture_batches() -> Vec<Vec<Card>> {
+        crate::utils::json_stream_parser::test_support::collect_batches(
+            CardEventProcessor::new(500),
+            FIXTURE,
+        )
+        .await
+    }
+
+    // One batch per non-empty set: ESC (2 cards), SPL (3), BAD (1 of 2 — the
+    // scryfallId-less card is warn-and-skipped), MTY (empty, no batch).
+    #[tokio::test]
+    async fn fixture_flushes_one_batch_per_nonempty_set() {
+        let sizes: Vec<usize> = fixture_batches().await.iter().map(Vec::len).collect();
+        assert_eq!(sizes, vec![2, 3, 1]);
+    }
+
+    // Strings must survive the stream → subtree → domain trip byte-for-byte:
+    // quotes, backslashes, \n, \t, a raw control char (U+0001), and multi-byte
+    // UTF-8 split across feeder chunk boundaries.
+    #[tokio::test]
+    async fn fixture_preserves_escaped_strings_and_nested_values() {
+        let batches = fixture_batches().await;
+        let card = batches[0]
+            .iter()
+            .find(|c| c.id == "esc-card-0001")
+            .expect("torture card should be extracted");
+
+        assert_eq!(card.name, "Say \"Cheese!\"");
+        assert_eq!(
+            card.oracle_text.as_deref(),
+            Some(
+                "Choose one —\n• Say \"Cheese!\" deals 2 damage.\n• Target player discards a card named C:\\WINDOWS\\config.sys.\tGood luck.\u{1}"
+            )
+        );
+        assert_eq!(card.artist.as_deref(), Some("Éowyn Õzturk"));
+        assert_eq!(card.mana_cost.as_deref(), Some("{1}{r}"));
+        assert_eq!(card.colors, Some(vec!["R".to_string(), "W".to_string()]));
+        assert_eq!(card.rarity, crate::card::domain::CardRarity::Rare);
+        assert_eq!(card.scryfall_id.as_deref(), Some("esc-scry-0001"));
+        assert_eq!(card.tcgplayer_product_id.as_deref(), Some("500001"));
+        assert_eq!(card.legalities.len(), 2);
+        assert!(card.has_foil);
+        assert!(card.has_non_foil);
+        assert_eq!(card.set_code, "esc");
+
+        let german = batches[0]
+            .iter()
+            .find(|c| c.id == "esc-card-0002")
+            .expect("second card should be extracted");
+        assert_eq!(
+            german.oracle_text.as_deref(),
+            Some("Zerstöre das Ziel.\u{7} (Klingel!)")
+        );
+        assert_eq!(german.language, "German");
+        assert!(german.has_foil);
+        assert!(!german.has_non_foil);
+    }
+
+    // Both faces of a split card arrive in the same (whole-set) batch, keeping
+    // the raw combined name, so the downstream cross-face merge can pair them.
+    #[tokio::test]
+    async fn fixture_split_faces_stay_in_one_batch() {
+        let batches = fixture_batches().await;
+        let spl = &batches[1];
+        assert_eq!(spl.len(), 3);
+        let faces: Vec<&Card> = spl.iter().filter(|c| c.name == "Fire // Ice").collect();
+        assert_eq!(faces.len(), 2);
+        let sides: Vec<Option<&str>> = faces.iter().map(|c| c.side.as_deref()).collect();
+        assert!(sides.contains(&Some("a")) && sides.contains(&Some("b")));
+    }
+
+    // A card the mapper can't handle (missing scryfallId) is skipped with a
+    // warning; the rest of its set still comes through.
+    #[tokio::test]
+    async fn fixture_unmappable_card_is_skipped_not_fatal() {
+        let batches = fixture_batches().await;
+        let bad = &batches[2];
+        assert_eq!(bad.len(), 1);
+        assert_eq!(bad[0].name, "Survivor");
+    }
+
     // A set larger than the batch size must still be delivered as one batch, so
     // the cross-face split-card merge (applied per delivered batch downstream)
     // sees both faces. The old code flushed mid-set at batch_size, giving [2, 1]

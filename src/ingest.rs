@@ -133,6 +133,27 @@ mod tests {
             .unwrap()
     }
 
+    // The realistic multi-set fixture through the tee: every card batch and
+    // sealed batch arrives, and neither extractor disturbs the other even when
+    // one is mid-skip or mid-collection while the other is routing.
+    #[tokio::test]
+    async fn fixture_single_pass_extracts_all_cards_and_sealed() {
+        let fixture = include_str!("../tests/fixtures/all_printings_sample.json");
+        let records = run_tee(fixture).await;
+
+        let card_count = records
+            .iter()
+            .filter(|r| matches!(r, IngestRecord::Card(_)))
+            .count();
+        let sealed_count = records
+            .iter()
+            .filter(|r| matches!(r, IngestRecord::Sealed(_)))
+            .count();
+
+        assert_eq!(card_count, 6, "ESC 2 + SPL 3 + BAD 1");
+        assert_eq!(sealed_count, 2, "ESC's two valid sealed products");
+    }
+
     #[tokio::test]
     async fn single_pass_extracts_both_cards_and_sealed() {
         let records = run_tee(SAMPLE).await;
