@@ -42,11 +42,6 @@ pub enum Commands {
         buylist: bool,
     },
 
-    /// Single-pass ingest of cards + sealed products from one AllPrintings.json
-    /// stream (perf prototype). Compare against `ingest -c` then `ingest --sealed`.
-    /// Requires sets to already be ingested.
-    IngestCardsSealed {},
-
     /// Ingest published tournament decklists from external feeds (fbettega cache).
     /// Resolves card names against the `card` table and prunes decks past the
     /// retention window. Requires cards to already be ingested.

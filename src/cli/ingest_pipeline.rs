@@ -40,6 +40,16 @@ impl IngestPipeline<'_> {
         sealed: bool,
         reset: bool,
     ) -> Result<()> {
+        // Confirm the reset up front: declining a destructive prompt aborts the
+        // whole command rather than running a variant of what was asked.
+        if reset
+            && !confirm_destructive(
+                "This will DELETE all MTG data before ingesting. Do you want to proceed?",
+            )
+        {
+            warn!("Data reset not confirmed. Aborting ingest.");
+            return Ok(());
+        }
         let mut first_err: Option<anyhow::Error> = None;
         if let Err(e) = self
             .handle_ingest(sets, cards, prices, set_cards, sealed, reset)
@@ -179,7 +189,7 @@ impl IngestPipeline<'_> {
     /// used by default when both are requested. Sets must already be ingested
     /// (the card path skips unknown sets; sealed is filtered to set codes in
     /// the `set` table).
-    pub async fn ingest_cards_and_sealed(&self) -> Result<()> {
+    async fn ingest_cards_and_sealed(&self) -> Result<()> {
         let cards_before = self.card_service.fetch_count().await?;
         let sealed_before = self.sealed_product_service.fetch_count().await?;
         let valid_set_codes = self.sealed_product_service.fetch_valid_set_codes().await?;
@@ -345,14 +355,9 @@ impl IngestPipeline<'_> {
         Ok(())
     }
 
+    /// Deletes all MTG data. Confirmation happens up front in
+    /// [`Self::run_full_ingest_pipeline`], before anything runs.
     async fn reset_data(&self) -> Result<()> {
-        let confirmed = confirm_destructive(
-            "This will DELETE all MTG data before ingesting. Do you want to proceed?",
-        );
-        if !confirmed {
-            warn!("Skipped data reset.");
-            return Ok(());
-        }
         self.card_service.reset_all_data().await?;
         info!("All MTG data deleted.");
         Ok(())
