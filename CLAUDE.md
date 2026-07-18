@@ -126,7 +126,8 @@ src/
     ├── clock.rs         — today() (single UTC "today" for the whole crate)
     ├── http_client.rs   — Reqwest client for MTGJSON + Card Kingdom (not Scryfall)
     ├── json.rs          — JSON helper utilities
-    └── json_stream_parser.rs — Generic streaming JSON parser using actson
+    ├── json_stream_parser.rs — Generic streaming JSON parser using actson
+    └── subtree_collector.rs — SubtreeCollector (events → serde_json::Value) + DocumentCursor (depth/skip tracking) shared by the event processors
 ```
 
 ### Key Design Patterns

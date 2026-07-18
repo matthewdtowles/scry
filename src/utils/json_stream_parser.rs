@@ -150,6 +150,50 @@ where
     }
 }
 
+/// Shared harness for event-processor tests: drives a processor over an
+/// in-memory JSON document exactly as production does (through
+/// [`JsonStreamParser::parse_stream`]) and collects every flushed batch.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use futures::stream;
+    use std::sync::{Arc, Mutex};
+
+    /// Chunk size for feeding the document to the parser. Deliberately small
+    /// and odd so tokens, multi-byte UTF-8 sequences, and escape sequences get
+    /// split across fill boundaries, like a real chunked HTTP download.
+    const CHUNK_SIZE: usize = 97;
+
+    pub(crate) async fn collect_batches<T, P>(processor: P, json: &str) -> Vec<Vec<T>>
+    where
+        T: Send + 'static,
+        P: JsonEventProcessor<T>,
+    {
+        let mut parser = JsonStreamParser::new(processor);
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let sink = collected.clone();
+        let chunks: Vec<_> = json
+            .as_bytes()
+            .chunks(CHUNK_SIZE)
+            .map(|c| Ok::<_, std::io::Error>(Bytes::copy_from_slice(c)))
+            .collect();
+        parser
+            .parse_stream(stream::iter(chunks), move |batch| {
+                let sink = sink.clone();
+                Box::pin(async move {
+                    sink.lock().unwrap().push(batch);
+                    Ok(())
+                })
+            })
+            .await
+            .expect("fixture JSON should stream cleanly");
+        Arc::try_unwrap(collected)
+            .unwrap_or_else(|_| panic!("collector still shared"))
+            .into_inner()
+            .unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

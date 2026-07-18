@@ -1,0 +1,183 @@
+{
+  "meta": { "date": "2026-07-01", "version": "5.2.2" },
+  "data": {
+    "ESC": {
+      "baseSetSize": 2,
+      "block": "Escape",
+      "booster": {
+        "default": {
+          "boosters": [{ "contents": { "common": 10, "rare": 1 }, "weight": 1 }],
+          "boostersTotalWeight": 1,
+          "sheets": {
+            "common": { "cards": { "esc-card-0002": 1 }, "foil": false, "totalWeight": 1 }
+          }
+        }
+      },
+      "cards": [
+        {
+          "artist": "Éowyn Õzturk",
+          "boosterTypes": ["default"],
+          "colorIdentity": ["R", "W"],
+          "convertedManaCost": 2.5,
+          "edhrecRank": 12345,
+          "finishes": ["nonfoil", "foil"],
+          "flavorText": "\"Never trust a smiling chef.\"\n—Anonymous",
+          "identifiers": {
+            "scryfallId": "esc-scry-0001",
+            "tcgplayerProductId": "500001"
+          },
+          "language": "English",
+          "layout": "normal",
+          "legalities": { "commander": "Banned", "standard": "Legal" },
+          "manaCost": "{1}{R}",
+          "name": "Say \"Cheese!\"",
+          "number": "1",
+          "originalReleaseDate": null,
+          "rarity": "rare",
+          "setCode": "ESC",
+          "text": "Choose one —\n• Say \"Cheese!\" deals 2 damage.\n• Target player discards a card named C:\\WINDOWS\\config.sys.\tGood luck.\u0001",
+          "type": "Instant",
+          "uuid": "esc-card-0001"
+        },
+        {
+          "boosterTypes": ["default"],
+          "colorIdentity": [],
+          "finishes": ["foil"],
+          "identifiers": { "scryfallId": "esc-scry-0002" },
+          "language": "German",
+          "layout": "normal",
+          "name": "Blitzschlag",
+          "number": "2",
+          "rarity": "common",
+          "setCode": "ESC",
+          "text": "Zerstöre das Ziel.\u0007 (Klingel!)",
+          "type": "Sofortzauber",
+          "uuid": "esc-card-0002"
+        }
+      ],
+      "code": "ESC",
+      "isFoilOnly": false,
+      "name": "Escape",
+      "releaseDate": "2026-01-01",
+      "sealedProduct": [
+        {
+          "cardCount": 540,
+          "category": "booster_box",
+          "contents": {
+            "other": [{ "name": "Escape Spindown — \"Lucky\" Edition" }],
+            "pack": [{ "code": "default", "count": 36, "set": "esc" }]
+          },
+          "identifiers": { "tcgplayerProductId": "600001" },
+          "name": "Escape Draft Booster Box — \"Collector's\" Cut",
+          "productSize": 36,
+          "releaseDate": "2026-01-01",
+          "subtype": "draft",
+          "uuid": "esc-sealed-0001"
+        },
+        {
+          "category": "box_set",
+          "contents": { "deck": [{ "name": "Escape Starter" }] },
+          "identifiers": {},
+          "name": "Escape Bundle",
+          "uuid": "esc-sealed-0002"
+        },
+        {
+          "identifiers": {},
+          "name": "Escape MTGO Redemption",
+          "uuid": "esc-sealed-0003"
+        },
+        {
+          "identifiers": {},
+          "uuid": "esc-sealed-0004"
+        }
+      ],
+      "totalSetSize": 2,
+      "translations": { "German": "Flucht" },
+      "type": "expansion"
+    },
+    "SPL": {
+      "name": "Splitsville",
+      "type": "expansion",
+      "cards": [
+        {
+          "boosterTypes": ["default"],
+          "faceName": "Fire",
+          "finishes": ["nonfoil"],
+          "identifiers": { "scryfallId": "spl-scry-0001" },
+          "layout": "split",
+          "manaCost": "{1}{R}",
+          "name": "Fire // Ice",
+          "number": "10a",
+          "otherFaceIds": ["spl-card-0002"],
+          "rarity": "uncommon",
+          "setCode": "SPL",
+          "side": "a",
+          "type": "Instant",
+          "uuid": "spl-card-0001"
+        },
+        {
+          "boosterTypes": ["default"],
+          "faceName": "Ice",
+          "finishes": ["nonfoil"],
+          "identifiers": { "scryfallId": "spl-scry-0002" },
+          "layout": "split",
+          "manaCost": "{1}{U}",
+          "name": "Fire // Ice",
+          "number": "10b",
+          "otherFaceIds": ["spl-card-0001"],
+          "rarity": "uncommon",
+          "setCode": "SPL",
+          "side": "b",
+          "type": "Instant",
+          "uuid": "spl-card-0002"
+        },
+        {
+          "boosterTypes": ["default"],
+          "finishes": ["nonfoil"],
+          "identifiers": { "scryfallId": "spl-scry-0003" },
+          "layout": "normal",
+          "name": "Plain Creature",
+          "number": "11",
+          "rarity": "common",
+          "setCode": "SPL",
+          "type": "Creature — Bear",
+          "uuid": "spl-card-0003"
+        }
+      ]
+    },
+    "BAD": {
+      "cards": [
+        {
+          "identifiers": {},
+          "layout": "normal",
+          "name": "No Scryfall",
+          "number": "1",
+          "rarity": "common",
+          "setCode": "BAD",
+          "type": "Curse",
+          "uuid": "bad-card-0001"
+        },
+        {
+          "boosterTypes": ["default"],
+          "finishes": ["nonfoil"],
+          "identifiers": { "scryfallId": "bad-scry-0002" },
+          "layout": "normal",
+          "name": "Survivor",
+          "number": "2",
+          "rarity": "common",
+          "setCode": "BAD",
+          "type": "Creature",
+          "uuid": "bad-card-0002"
+        }
+      ],
+      "name": "Bad Batch",
+      "type": "expansion"
+    },
+    "MTY": {
+      "cards": [],
+      "name": "Empty Set",
+      "totalSetSize": 0,
+      "type": "expansion"
+    }
+  }
+}
