@@ -1,7 +1,6 @@
 use crate::price::cardkingdom::{granular_from_ck_products, CkPricelistEventProcessor, CkProduct};
 use crate::price::domain::{CardPrices, Price};
 use crate::price::event_processor::PriceEventProcessor;
-use crate::price::historical_event_processor::HistoricalPriceEventProcessor;
 use crate::price::repository::PriceRepository;
 use crate::price::write_timings::{timed, WriteTimings};
 use crate::utils::{clock, JsonStreamParser};
@@ -119,7 +118,7 @@ impl PriceService {
         debug!("Received byte stream for historical prices.");
         let valid_card_ids = self.repository.fetch_all_card_ids().await?;
 
-        let event_processor = HistoricalPriceEventProcessor::new(BATCH_SIZE);
+        let event_processor = PriceEventProcessor::new_historical(BATCH_SIZE);
         let timings = WriteTimings::default();
         let mut cards_seen = 0usize;
         let mut next_log = PROGRESS_LOG_EVERY;

@@ -110,8 +110,7 @@ src/
 │   └── service.rs       — Set ingestion, cleanup, size/price updates
 ├── price/
 │   ├── domain/          — Price, PriceAccumulator, GranularPrice/CardPrices (granular_price.rs)
-│   ├── event_processor.rs — Averaged-price processor for AllPricesToday.json
-│   ├── historical_event_processor.rs — Multi-date averaged-price processor for AllPrices.json
+│   ├── event_processor.rs — Averaged-price processor for AllPricesToday.json (new) and AllPrices.json (new_historical)
 │   ├── cardkingdom.rs   — Card Kingdom direct pricelist parsing (live buylist + qty)
 │   ├── write_timings.rs — Per-table write timing instrumentation
 │   ├── repository.rs    — price/price_history/granular_price queries + retention

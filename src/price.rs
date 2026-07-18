@@ -1,7 +1,6 @@
 mod cardkingdom;
 pub mod domain;
 mod event_processor;
-mod historical_event_processor;
 pub mod repository;
 pub mod service;
 mod write_timings;
