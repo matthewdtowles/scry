@@ -10,6 +10,11 @@ use tracing::{debug, info, warn};
 /// finds each set's `cards` array, and hands every card object's subtree to a
 /// [`SubtreeCollector`]. Document layout (depths):
 /// root(1) / data(2) / set object(3) / cards array(4) / card object(5).
+///
+/// Collected card subtrees are held in `pending_cards` and only mapped to
+/// domain when the set *object* closes: MTGJSON's set keys are alphabetical,
+/// so the set's `type` field arrives after its `cards` array, and mapping
+/// needs that type for `in_main` classification.
 pub struct CardEventProcessor {
     batch: Vec<Card>,
     collector: Option<SubtreeCollector>,
@@ -19,6 +24,7 @@ pub struct CardEventProcessor {
     expecting_cards_array: bool,
     expecting_set_type: bool,
     in_cards_array: bool,
+    pending_cards: Vec<serde_json::Value>,
 }
 
 impl JsonEventProcessor<Card> for CardEventProcessor {
@@ -36,23 +42,9 @@ impl JsonEventProcessor<Card> for CardEventProcessor {
             self.cursor.observe(event);
             if let Some(card_json) = collector.push_event(event, parser)? {
                 self.collector = None;
-                let set_type = self.current_set_type.as_deref().unwrap_or("");
-                match CardMapper::map_json_to_card(&card_json, set_type) {
-                    Ok(card) => {
-                        // Accumulate the whole set and flush only at the end
-                        // of its `cards` array (EndArray below). Flushing
-                        // mid-set at a fixed count would split a card's two
-                        // faces across batches, so the cross-face mana-cost
-                        // merge (done per delivered batch) would silently
-                        // miss the pair.
-                        self.batch.push(card);
-                    }
-                    Err(e) => {
-                        if let Some(code) = &self.current_set_code {
-                            warn!("Failed to parse {} card: {}", code, e);
-                        }
-                    }
-                }
+                // Defer mapping until the set object closes (EndObject below):
+                // the set's `type` may not have streamed by yet.
+                self.pending_cards.push(card_json);
             }
             return Ok(0);
         }
@@ -76,8 +68,23 @@ impl JsonEventProcessor<Card> for CardEventProcessor {
                 Ok(0)
             }
             JsonEvent::EndObject => {
+                // A set object closes only after all of its fields — including
+                // `type`, which follows `cards` in MTGJSON's alphabetical key
+                // order — so this is the earliest point the set's cards can be
+                // mapped with the correct set type. Flushing here (rather than
+                // mid-set at a fixed count) also keeps a split card's two faces
+                // in one batch, so the cross-face mana-cost merge (done per
+                // delivered batch) sees the pair. The per-set type state is
+                // consumed here, so it cannot leak into the next set.
+                let flushed = if self.cursor.depth() == 3 {
+                    self.map_pending_cards();
+                    self.expecting_set_type = false;
+                    self.batch.len()
+                } else {
+                    0
+                };
                 self.cursor.exit();
-                Ok(0)
+                Ok(flushed)
             }
             JsonEvent::StartArray => {
                 self.cursor.enter();
@@ -91,16 +98,11 @@ impl JsonEventProcessor<Card> for CardEventProcessor {
                 Ok(0)
             }
             JsonEvent::EndArray => {
-                // Return the batch length at the end of each set's `cards`
-                // array so the stream parser delivers one batch per set.
-                let flushed = if self.in_cards_array && self.cursor.depth() == 4 {
+                if self.in_cards_array && self.cursor.depth() == 4 {
                     self.in_cards_array = false;
-                    self.batch.len()
-                } else {
-                    0
-                };
+                }
                 self.cursor.exit();
-                Ok(flushed)
+                Ok(0)
             }
             JsonEvent::FieldName => self.handle_field_name(parser),
             JsonEvent::ValueString if self.expecting_set_type => {
@@ -128,6 +130,23 @@ impl CardEventProcessor {
             expecting_cards_array: false,
             expecting_set_type: false,
             in_cards_array: false,
+            pending_cards: Vec::new(),
+        }
+    }
+
+    /// Map the closing set's collected card subtrees into the batch, consuming
+    /// the set's type so it cannot leak into the next set.
+    fn map_pending_cards(&mut self) {
+        let set_type = self.current_set_type.take().unwrap_or_default();
+        for card_json in std::mem::take(&mut self.pending_cards) {
+            match CardMapper::map_json_to_card(&card_json, &set_type) {
+                Ok(card) => self.batch.push(card),
+                Err(e) => {
+                    if let Some(code) = &self.current_set_code {
+                        warn!("Failed to parse {} card: {}", code, e);
+                    }
+                }
+            }
         }
     }
 
@@ -289,5 +308,48 @@ mod tests {
         }"#;
 
         assert_eq!(batch_sizes(json, 2).await, vec![3]);
+    }
+
+    // MTGJSON set keys are alphabetical, so `type` follows `cards` — the set's
+    // type is only known after its cards have streamed by. Each card must be
+    // classified with its OWN set's type: without deferred mapping, AAA's card
+    // saw no type at all and BBB's card saw AAA's leaked "expansion",
+    // inverting both `in_main` results (neither card has `boosterTypes`, so
+    // the classifier's set-type fallback decides).
+    #[tokio::test]
+    async fn set_type_following_cards_applies_to_own_set_not_next() {
+        let json = r#"{
+            "data": {
+                "AAA": {
+                    "cards": [
+                        {"uuid":"a1","name":"A1","setCode":"AAA","number":"1","type":"Creature","rarity":"common","borderColor":"black","finishes":["nonfoil"],"identifiers":{"scryfallId":"s-a1"}}
+                    ],
+                    "name": "First",
+                    "type": "expansion"
+                },
+                "BBB": {
+                    "cards": [
+                        {"uuid":"b1","name":"B1","setCode":"BBB","number":"1","type":"Creature","rarity":"common","borderColor":"black","finishes":["nonfoil"],"identifiers":{"scryfallId":"s-b1"}}
+                    ],
+                    "name": "Second",
+                    "type": "commander"
+                }
+            }
+        }"#;
+
+        let batches = crate::utils::json_stream_parser::test_support::collect_batches(
+            CardEventProcessor::new(500),
+            json,
+        )
+        .await;
+        assert_eq!(batches.len(), 2);
+        assert!(
+            batches[0][0].in_main,
+            "expansion set's card should be in_main via the intrinsic fallback"
+        );
+        assert!(
+            !batches[1][0].in_main,
+            "commander set's card must not inherit the previous set's type"
+        );
     }
 }
