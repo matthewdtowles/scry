@@ -23,7 +23,7 @@ cargo run -- ingest-decks --days 2 # Ingest published tournament decks (fbettega
 cargo run -- post-ingest-prune    # Prune unwanted data (foreign unpriced, empty sets, dup foils)
 cargo run -- post-ingest-updates  # Recalculate set sizes, prices, fix main set classifications, portfolio snapshots
 cargo run -- cleanup -c           # Stream-cleanup individual cards based on filtering rules
-cargo run -- health               # Basic health check
+cargo run -- health               # Basic health check; exits non-zero when prices are stale
 cargo run -- health --detailed    # Detailed health check
 cargo run -- interactive          # Launch interactive menu (run multiple commands in one session)
 cargo run -- retention            # Apply tiered retention to price_history, granular_price_history, set_price_history, portfolio_value_history
