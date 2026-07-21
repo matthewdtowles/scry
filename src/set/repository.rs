@@ -71,25 +71,28 @@ impl SetRepository {
                 .push_bind(&set.set_type)
                 .push_bind(set.is_main);
         });
+        // `base_size` and `is_main` are seeded on insert but never overwritten
+        // on conflict: MTGJSON carries neither, so the mapper supplies
+        // placeholders (0 / true) that `update_sizes` and `update_is_main`
+        // replace in post-ingest. Writing the placeholders back on every
+        // re-ingest zeroed base_size for the whole table until post-ingest
+        // finished - and left it zeroed for good when a run died in between.
+        // `total_size` was already excluded here for the same reason.
         query_builder.push(
             " ON CONFLICT (code) DO UPDATE SET
-            base_size = EXCLUDED.base_size,
             block = EXCLUDED.block,
             keyrune_code = EXCLUDED.keyrune_code,
             name = EXCLUDED.name,
             parent_code = EXCLUDED.parent_code,
             release_date = EXCLUDED.release_date,
-            type = EXCLUDED.type,
-            is_main = EXCLUDED.is_main
+            type = EXCLUDED.type
         WHERE
-            set.base_size IS DISTINCT FROM EXCLUDED.base_size OR
             set.block IS DISTINCT FROM EXCLUDED.block OR
             set.keyrune_code IS DISTINCT FROM EXCLUDED.keyrune_code OR
             set.name IS DISTINCT FROM EXCLUDED.name OR
             set.parent_code IS DISTINCT FROM EXCLUDED.parent_code OR
             set.release_date IS DISTINCT FROM EXCLUDED.release_date OR
-            set.type IS DISTINCT FROM EXCLUDED.type OR
-            set.is_main IS DISTINCT FROM EXCLUDED.is_main",
+            set.type IS DISTINCT FROM EXCLUDED.type",
         );
         self.db.execute_query_builder(query_builder).await
     }
