@@ -44,7 +44,7 @@ impl HealthCheckService {
     /// decoding NULL.
     async fn price_age_days(&self) -> Result<i64> {
         self.db
-            .count("SELECT COALESCE(CURRENT_DATE - MAX(date), 9999)::bigint FROM price")
+            .scalar_i64("SELECT COALESCE(CURRENT_DATE - MAX(date), 9999)::bigint FROM price")
             .await
     }
 

@@ -47,11 +47,11 @@ async fn test_save_sets_upsert_preserves_derived_columns() {
 
     // A commander set: update_is_main resolves it to false, so the mapper's
     // `is_main = true` placeholder is visibly different from the stored value.
-    let mut set = common::create_test_set("s05");
+    let mut set = common::create_test_set("der01");
     set.set_type = "commander".to_string();
     repo.save_sets(&[set.clone()]).await.unwrap();
     repo.update_is_main().await.unwrap();
-    repo.update_sizes(&[("s05".to_string(), 264)], &[("s05".to_string(), 400)])
+    repo.update_sizes(&[("der01".to_string(), 264)], &[("der01".to_string(), 400)])
         .await
         .unwrap();
 
@@ -63,7 +63,7 @@ async fn test_save_sets_upsert_preserves_derived_columns() {
 
     let preserved = db
         .count(
-            "SELECT COUNT(*) FROM \"set\" WHERE code = 's05'
+            "SELECT COUNT(*) FROM \"set\" WHERE code = 'der01'
              AND base_size = 264 AND total_size = 400 AND is_main = false",
         )
         .await
