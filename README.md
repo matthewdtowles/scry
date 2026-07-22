@@ -1,6 +1,8 @@
 # Scry
 
-Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gathering data from the [Scryfall API](https://scryfall.com/docs/api) into a PostgreSQL database. Part of the [I Want My MTG](https://github.com/matthewdtowles/i-want-my-mtg) project.
+Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gathering data into a PostgreSQL database. Part of the [I Want My MTG](https://github.com/matthewdtowles/i-want-my-mtg) project.
+
+Sources are **MTGJSON** bulk files (`AllPrintings.json`, `AllPricesToday.json`, `AllPrices.json`), the **Card Kingdom** direct pricelist (live buylist), and the **fbettega** tournament-deck feed. Scryfall is not a data source - it only serves the card *images* the web app renders.
 
 ## Quick Start
 
@@ -9,9 +11,10 @@ Rust CLI tool for ETL (Extract, Transform, Load) of Magic: The Gathering data fr
 cp .env.example .env  # Configure DATABASE_URL
 
 # Run
-cargo run -- ingest           # Full ingest (sets, cards + sealed, prices)
-cargo run -- health           # Data integrity check
-cargo run -- interactive      # Launch interactive menu
+cargo run -- ingest              # Full ingest (sets, cards + sealed, prices)
+cargo run -- ingest-decks        # Ingest published tournament decks
+cargo run -- health              # Data integrity check
+cargo run -- interactive         # Launch interactive menu
 ```
 
 ## Commands
@@ -36,9 +39,21 @@ scry ingest --sealed     # Ingest sealed products only
 scry ingest -p           # Ingest prices only
 scry ingest -k <CODE>    # Ingest cards for a specific set (e.g., -k mh3)
 scry ingest -r           # Reset all data before ingesting (requires confirmation)
+scry ingest -b           # Card Kingdom direct buylist only (live offers + buy qty)
 ```
 
 Flags can be combined, e.g. `scry ingest -s -p` to ingest sets and prices. Requesting both cards and sealed products shares the single `AllPrintings.json` pass; requesting only one runs that one's standalone stream.
+
+`-b` is exclusive - it conflicts with every other `ingest` flag. It refreshes only the Card Kingdom direct buylist (`granular_price`) and skips the MTGJSON download entirely.
+
+### `ingest-decks` — Ingest published tournament decklists
+
+Fetches tournament results from the fbettega cache, resolves card names against the `card` table, and prunes decks past the retention window. Requires cards to already be ingested. Writes `published_deck` / `published_deck_card`, which the web app reads for `/published-decks`.
+
+```bash
+scry ingest-decks              # Last 7 days (default)
+scry ingest-decks --days 2     # Last 2 days (what production cron runs)
+```
 
 ### `post-ingest-prune` — Prune unwanted ingested data
 
@@ -73,13 +88,17 @@ scry health              # Basic health check
 scry health --detailed   # Detailed health check
 ```
 
+Exits non-zero when the newest price row is more than a day old, which is how the production freshness cron (06:00 UTC daily) detects a missed ingest.
+
 ### `retention` — Apply retention policy
 
-Applies a tiered retention policy to `price_history`, `granular_price_history`, `set_price_history`, and `portfolio_value_history`: keeps daily rows for 7 days, weekly (Mondays) for 7-28 days, and monthly (1st of month) for 28+ days.
+Applies a tiered retention policy to `price_history`, `set_price_history`, and `portfolio_value_history`: keeps daily rows for 7 days, weekly (Mondays) for 7-28 days, and monthly (1st of month) for 28+ days.
 
 ```bash
 scry retention
 ```
+
+> **Known break ([#63](https://github.com/matthewdtowles/scry/issues/63)):** the command also tries to prune `granular_price_history`, which the web repo dropped in migration 042. That step errors and aborts the run before set-price and portfolio retention execute.
 
 ### `backfill` — Backfill price_history from MTGJSON
 
@@ -99,9 +118,17 @@ Deletes all data from the price_history table. Requires interactive confirmation
 scry truncate-history
 ```
 
-### `portfolio-summary` — Refresh portfolio value snapshots
+### `backfill-set-price-history` — Backfill set_price_history
 
-Takes a daily portfolio value snapshot for all users.
+One-time operation that reconstructs `set_price_history` from existing `price_history` data.
+
+```bash
+scry backfill-set-price-history
+```
+
+### `portfolio-summary` — Refresh portfolio summaries
+
+Recomputes `portfolio_summary` and `portfolio_card_performance` for all users. Run daily by cron at 02:30 UTC.
 
 ```bash
 scry portfolio-summary
