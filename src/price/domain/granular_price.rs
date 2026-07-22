@@ -7,9 +7,9 @@ use sqlx::FromRow;
 
 /// A single price point as ingested, with no averaging: one provider, one
 /// retail|buylist type, one finish, one condition, one day. Mirrors a row in
-/// the web DB's `granular_price` (current per-vendor offer) and
-/// `granular_price_history` (dated series) — owned there; scry writes and
-/// prunes both.
+/// the web DB's `granular_price` (current per-vendor offer) — owned there,
+/// scry writes it. (The dated `granular_price_history` series was dropped in
+/// the web repo's migration 042, ROADMAP 10.10.)
 ///
 /// `condition` is "NM" by convention for sources with no grade (MTGJSON, the
 /// only Tier A source).
