@@ -61,6 +61,16 @@ impl ConnectionPool {
         Ok(count)
     }
 
+    /// Run a query whose first column is a single `i64` that is not a count -
+    /// a date difference, an age, a derived total. Keeps [`Self::count`] honest
+    /// about being for `COUNT(...)` queries.
+    ///
+    /// Same trusted-constant contract on `query` as [`Self::count`].
+    pub async fn scalar_i64(&self, query: &str) -> Result<i64> {
+        let value: i64 = sqlx::query_scalar(query).fetch_one(&*self.pool).await?;
+        Ok(value)
+    }
+
     /// Weekly tier of the shared price-history retention policy (§4.2): in the
     /// 7-28 day window, keep only Mondays (DOW 1). Date-based, so it applies
     /// independently to every series in the table. Returns the rows deleted.

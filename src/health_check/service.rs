@@ -16,10 +16,12 @@ impl HealthCheckService {
     pub async fn basic_check(&self) -> Result<BasicHealthStatus> {
         info!("Performing basic health check");
         let card_count = self.count_cards().await?;
+        let price_age_days = self.price_age_days().await?;
         let price_count = self.count_prices().await?;
         let set_count = self.count_sets().await?;
         Ok(BasicHealthStatus {
             card_count,
+            price_age_days,
             price_count,
             set_count,
         })
@@ -35,6 +37,15 @@ impl HealthCheckService {
             cards_with_prices,
             cards_without_prices,
         })
+    }
+
+    /// Days since the newest `price` row. An empty table has no MAX(date), so
+    /// COALESCE stands in a value that is stale under any threshold rather than
+    /// decoding NULL.
+    async fn price_age_days(&self) -> Result<i64> {
+        self.db
+            .scalar_i64("SELECT COALESCE(CURRENT_DATE - MAX(date), 9999)::bigint FROM price")
+            .await
     }
 
     async fn count_cards_with_prices(&self) -> Result<i64> {

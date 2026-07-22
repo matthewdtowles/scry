@@ -1,11 +1,12 @@
 use crate::{
     cli::{confirm_destructive, ingest_pipeline::IngestPipeline, Commands},
+    health_check::models::MAX_PRICE_AGE_DAYS,
     portfolio::service::PortfolioService,
     price::PriceService,
     published_deck::service::PublishedDeckService,
     sealed_product::service::SealedProductService,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 use dialoguer::{theme::ColorfulTheme, Select};
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -366,13 +367,26 @@ ONE-TIME SETUP
         Ok(())
     }
 
+    /// Reports the health status, then fails the command when prices are
+    /// stale. The report alone only reaches a log file nobody reads; the
+    /// non-zero exit is what lets the daily cron surface a stalled ingest.
     async fn handle_health(&self, detailed: bool) -> Result<()> {
-        if detailed {
+        let basic = if detailed {
             let status = self.health_service.detailed_check().await?;
             status.display();
+            status.basic
         } else {
             let status = self.health_service.basic_check().await?;
             status.display();
+            status
+        };
+        if basic.is_stale() {
+            bail!(
+                "Price data is stale: newest price row is {} day(s) old (max {}). \
+                 The daily ingest is not completing.",
+                basic.price_age_days,
+                MAX_PRICE_AGE_DAYS
+            );
         }
         Ok(())
     }

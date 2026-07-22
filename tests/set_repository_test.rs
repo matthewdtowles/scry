@@ -38,6 +38,44 @@ async fn test_save_sets_upsert() {
 
 #[tokio::test]
 #[ignore]
+async fn test_save_sets_upsert_preserves_derived_columns() {
+    // base_size / is_main are owned by post-ingest (update_sizes,
+    // update_is_main), not by MTGJSON. A re-ingest must not write the
+    // mapper's placeholders back over them.
+    let db = common::setup_test_db().await;
+    let repo = SetRepository::new(db.clone());
+
+    // A commander set: update_is_main resolves it to false, so the mapper's
+    // `is_main = true` placeholder is visibly different from the stored value.
+    let mut set = common::create_test_set("der01");
+    set.set_type = "commander".to_string();
+    repo.save_sets(&[set.clone()]).await.unwrap();
+    repo.update_is_main().await.unwrap();
+    repo.update_sizes(&[("der01".to_string(), 264)], &[("der01".to_string(), 400)])
+        .await
+        .unwrap();
+
+    // Re-ingest the same set with the mapper's placeholders.
+    set.base_size = 0;
+    set.is_main = true;
+    set.name = "Updated Name".to_string();
+    repo.save_sets(&[set]).await.unwrap();
+
+    let preserved = db
+        .count(
+            "SELECT COUNT(*) FROM \"set\" WHERE code = 'der01'
+             AND base_size = 264 AND total_size = 400 AND is_main = false",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        preserved, 1,
+        "Re-ingesting a set must not reset its post-ingest base_size / is_main"
+    );
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_fetch_empty_sets() {
     let db = common::setup_test_db().await;
     let repo = SetRepository::new(db);
