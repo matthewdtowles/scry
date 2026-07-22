@@ -18,7 +18,6 @@ impl PriceRepository {
     const PRICE_TABLE: &str = "price";
     const PRICE_HISTORY_TABLE: &str = "price_history";
     const GRANULAR_PRICE_TABLE: &str = "granular_price";
-    const GRANULAR_PRICE_HISTORY_TABLE: &str = "granular_price_history";
 
     pub fn new(db: Arc<ConnectionPool>) -> Self {
         Self { db }
@@ -213,18 +212,6 @@ impl PriceRepository {
 
     pub async fn apply_monthly_retention(&self) -> Result<i64> {
         self.db.retain_monthly_tier(Self::PRICE_HISTORY_TABLE).await
-    }
-
-    pub async fn apply_granular_weekly_retention(&self) -> Result<i64> {
-        self.db
-            .retain_weekly_tier(Self::GRANULAR_PRICE_HISTORY_TABLE)
-            .await
-    }
-
-    pub async fn apply_granular_monthly_retention(&self) -> Result<i64> {
-        self.db
-            .retain_monthly_tier(Self::GRANULAR_PRICE_HISTORY_TABLE)
-            .await
     }
 
     pub async fn truncate_price_history(&self) -> Result<()> {
