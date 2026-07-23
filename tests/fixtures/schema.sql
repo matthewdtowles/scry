@@ -137,18 +137,10 @@ CREATE TABLE IF NOT EXISTS granular_price (
     PRIMARY KEY (card_id, provider, price_type, finish, condition)
 );
 
--- History: dated series (date in the PK), retention-bounded.
-CREATE TABLE IF NOT EXISTS granular_price_history (
-    card_id VARCHAR(36) NOT NULL REFERENCES card(id) ON DELETE CASCADE,
-    provider VARCHAR NOT NULL,
-    price_type VARCHAR NOT NULL,
-    finish VARCHAR NOT NULL,
-    condition VARCHAR NOT NULL DEFAULT 'NM',
-    date DATE NOT NULL,
-    price NUMERIC(10,2) NOT NULL,
-    qty INTEGER,
-    PRIMARY KEY (card_id, provider, price_type, finish, condition, date)
-);
+-- NOTE: granular_price_history is deliberately absent. The web repo dropped it
+-- in migration 042 (ROADMAP 10.10). Keeping it here let code that referenced the
+-- dropped table pass CI and fail in production - which is exactly what happened
+-- to the retention command (#63). This fixture must mirror the live web schema.
 
 -- Set price table
 CREATE TABLE IF NOT EXISTS set_price (
