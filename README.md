@@ -98,7 +98,7 @@ Applies a tiered retention policy to `price_history`, `set_price_history`, and `
 scry retention
 ```
 
-> **Known break ([#63](https://github.com/matthewdtowles/scry/issues/63)):** the command also tries to prune `granular_price_history`, which the web repo dropped in migration 042. That step errors and aborts the run before set-price and portfolio retention execute.
+Retention does not touch `granular_price` — CK-direct upserts one row per card+finish+vendor, so it does not grow unbounded. (It once also pruned `granular_price_history`, which the web repo dropped in migration 042; that broke the whole run until [#65](https://github.com/matthewdtowles/scry/pull/65) removed the step - see [#63](https://github.com/matthewdtowles/scry/issues/63).)
 
 ### `backfill` — Backfill price_history from MTGJSON
 
