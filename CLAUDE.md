@@ -26,7 +26,7 @@ cargo run -- cleanup -c           # Stream-cleanup individual cards based on fil
 cargo run -- health               # Basic health check; exits non-zero when prices are stale
 cargo run -- health --detailed    # Detailed health check
 cargo run -- interactive          # Launch interactive menu (run multiple commands in one session)
-cargo run -- retention            # Apply tiered retention to price_history, set_price_history, portfolio_value_history (see #63)
+cargo run -- retention            # Apply tiered retention to price_history, set_price_history, portfolio_value_history
 cargo run -- portfolio-summary    # Compute portfolio_summary + card_performance for all users (cron)
 cargo run -- backfill             # One-time: load historical prices from AllPrices.json into price_history
 cargo run -- backfill-set-price-history # One-time: derive set_price_history from price_history
@@ -145,7 +145,7 @@ src/
 
 Shares the same PostgreSQL database as the NestJS web app ([i-want-my-mtg](https://github.com/matthewdtowles/i-want-my-mtg)). Schema and migrations are managed in the web app repo. Core tables: `card`, `set`, `price`, `price_history`, `legality`, `set_price`, `granular_price` (current Card Kingdom buylist offer, one row per card+finish+vendor), `published_deck` / `published_deck_card` (tournament catalog), `portfolio_summary` / `portfolio_card_performance`.
 
-`granular_price_history` no longer exists - the web repo dropped it in migration 042 (ROADMAP §10.10). The `retention` command still tries to prune it, which breaks the run; tracked in [#63](https://github.com/matthewdtowles/scry/issues/63).
+`granular_price_history` no longer exists - the web repo dropped it in migration 042 (ROADMAP §10.10). `retention` used to try to prune it, which broke the run until [#65](https://github.com/matthewdtowles/scry/pull/65) removed that step ([#63](https://github.com/matthewdtowles/scry/issues/63)).
 
 Uses SQLx with the `runtime-tokio-rustls` feature. The `ConnectionPool` struct wraps `PgPool` and provides helper methods for common query patterns (count, execute, fetch).
 
