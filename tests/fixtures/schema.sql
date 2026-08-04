@@ -90,6 +90,11 @@ CREATE TABLE IF NOT EXISTS card (
 -- pre-existing card table (same shape the prod migration takes).
 ALTER TABLE card ADD COLUMN IF NOT EXISTS language VARCHAR(32) NOT NULL DEFAULT 'English';
 
+-- Date the row was last found in MTGJSON's feed. Nullable: rows predating the
+-- column read as NULL and the stale-row sweep treats them as unseen. Mirrors
+-- the prod column added by the web app migration.
+ALTER TABLE card ADD COLUMN IF NOT EXISTS last_seen DATE;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_card_scryfall_id ON card (scryfall_id);
 
 -- Legality table
@@ -276,5 +281,7 @@ CREATE TABLE IF NOT EXISTS sealed_product (
     contents_summary TEXT,
     tcgplayer_product_id VARCHAR(32)
 );
+
+ALTER TABLE sealed_product ADD COLUMN IF NOT EXISTS last_seen DATE;
 
 SELECT pg_advisory_unlock(42);

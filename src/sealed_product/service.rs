@@ -1,4 +1,5 @@
 use crate::database::ConnectionPool;
+use crate::ingest::IngestLedger;
 use crate::sealed_product::domain::SealedProduct;
 use crate::sealed_product::event_processor::SealedProductEventProcessor;
 use crate::sealed_product::repository::SealedProductRepository;
@@ -57,7 +58,7 @@ impl SealedProductService {
     /// memorabilia) without duplicating the rule: whatever set ingestion accepted
     /// is exactly what sealed-product ingestion will write, so FK violations
     /// against `set(code)` are impossible by construction.
-    pub async fn ingest_all(&self) -> Result<i64> {
+    pub async fn ingest_all(&self, ledger: Arc<IngestLedger>) -> Result<i64> {
         info!("Starting sealed product ingestion from AllPrintings stream");
         let valid_set_codes: Arc<HashSet<String>> = Arc::new(
             self.set_codes
@@ -84,6 +85,7 @@ impl SealedProductService {
                 let repo = repo.clone();
                 let total = total_for_closure.clone();
                 let valid_set_codes = valid_set_codes.clone();
+                let ledger = ledger.clone();
                 Box::pin(async move {
                     if batch.is_empty() {
                         return Ok(());
@@ -113,8 +115,21 @@ impl SealedProductService {
                             *lock += count;
                         }
                         Err(e) => {
+                            ledger.record_sealed_failure();
                             warn!(
                                 "Failed to save sealed products for set {}: {:#}",
+                                set_code, e
+                            );
+                            return Ok(());
+                        }
+                    }
+                    let uuids: Vec<String> = filtered.iter().map(|p| p.uuid.clone()).collect();
+                    match repo.stamp_seen(&uuids, ledger.date()).await {
+                        Ok(stamped) => ledger.record_sealed(stamped),
+                        Err(e) => {
+                            ledger.record_sealed_failure();
+                            warn!(
+                                "Failed to stamp sealed products for set {}: {:#}",
                                 set_code, e
                             );
                         }

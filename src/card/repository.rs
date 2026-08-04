@@ -1,5 +1,6 @@
 use crate::{card::domain::Card, database::ConnectionPool};
 use anyhow::Result;
+use chrono::NaiveDate;
 use sqlx::QueryBuilder;
 use std::sync::Arc;
 use tracing::{debug, error, warn};
@@ -246,6 +247,60 @@ impl CardRepository {
             .execute_query_builders_tx(vec![delete_qb, qb])
             .await?;
         Ok(())
+    }
+
+    /// Stamp `last_seen` on the rows this ingest run found in MTGJSON.
+    ///
+    /// Deliberately a statement of its own rather than a column folded into
+    /// [`Self::save_cards`]: that upsert skips rows whose data is unchanged
+    /// (`ON CONFLICT ... WHERE ... IS DISTINCT FROM ...`), which on any given
+    /// day is most of the catalog, so a stamp carried by it would leave the
+    /// stable majority looking unseen and the sweep would delete them.
+    ///
+    /// Equally deliberately NOT called from `save_cards`' other callers - the
+    /// foil dedup and the `in_main` fixes re-save rows without having seen them
+    /// in the feed, and stamping there would hide genuinely stale rows.
+    pub async fn stamp_cards_seen(&self, ids: &[String], date: NaiveDate) -> Result<i64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut qb = QueryBuilder::new("UPDATE card SET last_seen = ");
+        qb.push_bind(date);
+        qb.push(" WHERE id = ANY(");
+        qb.push_bind(ids.to_vec());
+        qb.push(")");
+        self.db.execute_query_builder(qb).await
+    }
+
+    /// Cards carrying `date` as their `last_seen`. Half of the sweep's proof
+    /// that the run was complete: it must equal the number of rows the run
+    /// stamped.
+    pub async fn count_seen_on(&self, date: NaiveDate) -> Result<i64> {
+        let mut qb = QueryBuilder::new("SELECT COUNT(*)::bigint FROM card WHERE last_seen = ");
+        qb.push_bind(date);
+        let rows: Vec<(i64,)> = self.db.fetch_all_query_builder(qb).await?;
+        Ok(rows.into_iter().next().map(|(n,)| n).unwrap_or(0))
+    }
+
+    /// Set codes that currently hold at least one card. The other half of the
+    /// sweep's proof: every one of these must have delivered a card batch this
+    /// run, or the stream did not cover the catalog and nothing may be deleted.
+    pub async fn fetch_set_codes_with_cards(&self) -> Result<Vec<String>> {
+        let qb = QueryBuilder::new("SELECT DISTINCT set_code FROM card");
+        let rows: Vec<(String,)> = self.db.fetch_all_query_builder(qb).await?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    /// Delete cards MTGJSON no longer lists: every row this run did not stamp.
+    ///
+    /// `IS DISTINCT FROM` rather than `< date` so NULLs (rows predating the
+    /// column) and any future-dated row are both swept. Callers must have
+    /// cleared [`crate::ingest::IngestLedger::card_sweep_block`] first - on its
+    /// own this statement would empty the table after a partial ingest.
+    pub async fn delete_stale_cards(&self, date: NaiveDate) -> Result<i64> {
+        let mut qb = QueryBuilder::new("DELETE FROM card WHERE last_seen IS DISTINCT FROM ");
+        qb.push_bind(date);
+        self.db.execute_query_builder(qb).await
     }
 
     pub async fn count(&self) -> Result<u64> {

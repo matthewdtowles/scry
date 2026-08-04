@@ -1,6 +1,7 @@
 use crate::database::ConnectionPool;
 use crate::sealed_product::domain::SealedProduct;
 use anyhow::Result;
+use chrono::NaiveDate;
 use sqlx::QueryBuilder;
 use std::sync::Arc;
 use tracing::warn;
@@ -70,6 +71,39 @@ impl SealedProductRepository {
                 sealed_product.tcgplayer_product_id IS DISTINCT FROM EXCLUDED.tcgplayer_product_id",
         );
 
+        self.db.execute_query_builder(qb).await
+    }
+
+    /// Stamp `last_seen` on the products this ingest run found in MTGJSON.
+    /// Separate from [`Self::save`] for the same reason as the card stamp: that
+    /// upsert skips rows whose data is unchanged, so a stamp folded into it
+    /// would leave the unchanged majority looking unseen.
+    pub async fn stamp_seen(&self, uuids: &[String], date: NaiveDate) -> Result<i64> {
+        if uuids.is_empty() {
+            return Ok(0);
+        }
+        let mut qb = QueryBuilder::new("UPDATE sealed_product SET last_seen = ");
+        qb.push_bind(date);
+        qb.push(" WHERE uuid = ANY(");
+        qb.push_bind(uuids.to_vec());
+        qb.push(")");
+        self.db.execute_query_builder(qb).await
+    }
+
+    pub async fn count_seen_on(&self, date: NaiveDate) -> Result<i64> {
+        let mut qb =
+            QueryBuilder::new("SELECT COUNT(*)::bigint FROM sealed_product WHERE last_seen = ");
+        qb.push_bind(date);
+        let rows: Vec<(i64,)> = self.db.fetch_all_query_builder(qb).await?;
+        Ok(rows.into_iter().next().map(|(n,)| n).unwrap_or(0))
+    }
+
+    /// Delete products MTGJSON no longer lists. Gated by the caller exactly as
+    /// the card sweep is - see [`crate::ingest::IngestLedger`].
+    pub async fn delete_stale(&self, date: NaiveDate) -> Result<i64> {
+        let mut qb =
+            QueryBuilder::new("DELETE FROM sealed_product WHERE last_seen IS DISTINCT FROM ");
+        qb.push_bind(date);
         self.db.execute_query_builder(qb).await
     }
 }

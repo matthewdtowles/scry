@@ -7,8 +7,9 @@ use crate::{
         repository::CardRepository,
     },
     database::ConnectionPool,
+    ingest::IngestLedger,
     price::service::PriceService,
-    utils::{HttpClient, JsonStreamParser},
+    utils::{clock, HttpClient, JsonStreamParser},
 };
 use anyhow::Result;
 use serde_json::Value;
@@ -85,12 +86,20 @@ impl CardService {
         }
         let count = self.repository.save_cards(&final_cards).await?;
         self.repository.save_legalities(&final_cards).await?;
+        // Stamp for the same reason the streaming path does, so every card
+        // persisted from the feed carries a `last_seen`. No ledger here: a
+        // single-set ingest can never prove catalog coverage, so it never
+        // enables the sweep - the next full ingest is what does.
+        let ids: Vec<String> = final_cards.iter().map(|c| c.id.clone()).collect();
+        self.repository
+            .stamp_cards_seen(&ids, clock::today())
+            .await?;
         // Conditional upsert, so `count` is rows changed, not cards seen.
         debug!("Cards ingest for set {}: {} rows changed", set_code, count);
         Ok(count)
     }
 
-    pub async fn ingest_all(&self) -> Result<()> {
+    pub async fn ingest_all(&self, ledger: Arc<IngestLedger>) -> Result<()> {
         debug!("Start ingestion of all cards");
         let byte_stream = self.data_source.all_cards_stream().await?;
         debug!("Received byte stream for all cards");
@@ -100,7 +109,8 @@ impl CardService {
         json_stream_parser
             .parse_stream(byte_stream, move |batch| {
                 let repo = repo.clone();
-                Box::pin(async move { Self::save_card_batch(&repo, batch).await })
+                let ledger = ledger.clone();
+                Box::pin(async move { Self::save_card_batch(&repo, batch, &ledger).await })
             })
             .await?;
         Ok(())
@@ -113,9 +123,16 @@ impl CardService {
     /// to us one at a time, so this runs sequentially. Shared by
     /// [`Self::ingest_all`] and the single-pass ingest in
     /// [`crate::cli::ingest_pipeline`].
+    ///
+    /// Every persisted row is also stamped as seen in this run's feed, and the
+    /// set is recorded in `ledger`, so post-ingest prune can tell a card
+    /// MTGJSON dropped from a card the stream simply never reached. A set
+    /// skipped for not existing in the DB is deliberately not recorded - the
+    /// stream reached it, but nothing here owns its rows.
     pub(crate) async fn save_card_batch(
         repo: &Arc<dyn CardRepositoryPort>,
         batch: Vec<Card>,
+        ledger: &IngestLedger,
     ) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
@@ -126,10 +143,14 @@ impl CardService {
             return Ok(());
         }
         let batch = Self::merge_and_filter_cards(batch);
+        let mut stamped = 0i64;
         for chunk in batch.chunks(Self::BATCH_SIZE) {
             repo.save_cards(chunk).await?;
             repo.save_legalities(chunk).await?;
+            let ids: Vec<String> = chunk.iter().map(|c| c.id.clone()).collect();
+            stamped += repo.stamp_cards_seen(&ids, ledger.date()).await?;
         }
+        ledger.record_cards(&set_code, stamped);
         Ok(())
     }
 
@@ -356,6 +377,7 @@ mod tests {
     use crate::card::domain::CardRarity;
     use crate::card::ports::ByteStream;
     use async_trait::async_trait;
+    use chrono::NaiveDate;
     use std::sync::Mutex as StdMutex;
 
     /// A one-set `AllPrintings.json` fragment with a single card.
@@ -395,10 +417,12 @@ mod tests {
         }
     }
 
-    /// Records the ids handed to `save_cards`; other methods are unused here.
+    /// Records the ids handed to `save_cards` and to `stamp_cards_seen`; other
+    /// methods are unused here.
     #[derive(Default)]
     struct SpyRepo {
         saved: StdMutex<Vec<String>>,
+        stamped: StdMutex<Vec<(String, NaiveDate)>>,
     }
 
     #[async_trait]
@@ -453,6 +477,26 @@ mod tests {
         async fn reset_all_data(&self) -> Result<()> {
             unimplemented!()
         }
+        async fn stamp_cards_seen(&self, ids: &[String], date: NaiveDate) -> Result<i64> {
+            let mut stamped = self.stamped.lock().unwrap();
+            for id in ids {
+                stamped.push((id.clone(), date));
+            }
+            Ok(ids.len() as i64)
+        }
+        async fn count_seen_on(&self, _date: NaiveDate) -> Result<i64> {
+            unimplemented!()
+        }
+        async fn fetch_set_codes_with_cards(&self) -> Result<Vec<String>> {
+            unimplemented!()
+        }
+        async fn delete_stale_cards(&self, _date: NaiveDate) -> Result<i64> {
+            unimplemented!()
+        }
+    }
+
+    fn run_date() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 8, 4).unwrap()
     }
 
     /// The port refactor's payoff: `ingest_all` streams + parses + persists with
@@ -463,10 +507,56 @@ mod tests {
         let service =
             CardService::with_ports(Arc::new(FakeDataSource(SAMPLE_ALL_PRINTINGS)), repo.clone());
 
-        service.ingest_all().await.unwrap();
+        service
+            .ingest_all(Arc::new(IngestLedger::new(run_date())))
+            .await
+            .unwrap();
 
         let saved = repo.saved.lock().unwrap();
         assert_eq!(saved.as_slice(), &["card-uuid-1".to_string()]);
+    }
+
+    /// Every card persisted from the feed is stamped with the run's date, and
+    /// the run's set coverage is recorded - the two facts the stale-row sweep
+    /// (scry#67) depends on. Without the stamp, the sweep would read the whole
+    /// catalog as unseen and delete it.
+    #[tokio::test]
+    async fn ingest_all_stamps_saved_cards_and_records_set_coverage() {
+        let repo = Arc::new(SpyRepo::default());
+        let ledger = Arc::new(IngestLedger::new(run_date()));
+        let service =
+            CardService::with_ports(Arc::new(FakeDataSource(SAMPLE_ALL_PRINTINGS)), repo.clone());
+
+        service.ingest_all(ledger.clone()).await.unwrap();
+
+        let stamped = repo.stamped.lock().unwrap();
+        assert_eq!(
+            stamped.as_slice(),
+            &[("card-uuid-1".to_string(), run_date())]
+        );
+        // One card stamped, in the one set the fixture covers: the gate opens.
+        assert_eq!(ledger.card_sweep_block(&["tst".to_string()], 1), None);
+    }
+
+    /// A set that still holds cards but delivered no batch means the stream did
+    /// not reach it. The row count alone cannot see this - it agrees perfectly
+    /// with itself - so set coverage has to be what blocks the sweep.
+    #[tokio::test]
+    async fn truncated_stream_blocks_the_sweep_despite_matching_counts() {
+        let repo = Arc::new(SpyRepo::default());
+        let ledger = Arc::new(IngestLedger::new(run_date()));
+        let service =
+            CardService::with_ports(Arc::new(FakeDataSource(SAMPLE_ALL_PRINTINGS)), repo.clone());
+
+        service.ingest_all(ledger.clone()).await.unwrap();
+
+        let block = ledger
+            .card_sweep_block(&["tst".to_string(), "sos".to_string()], 1)
+            .expect("a set with cards but no batch must block the sweep");
+        assert!(
+            block.contains("sos"),
+            "block reason should name it: {block}"
+        );
     }
 
     fn create_test_card(id: &str) -> Card {

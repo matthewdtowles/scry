@@ -82,7 +82,7 @@ impl CliController {
 
             Commands::PostIngestPrune {} => self
                 .pipeline()
-                .post_ingest_prune()
+                .post_ingest_prune(None)
                 .await
                 .inspect_err(|e| error!("Pruning failed: {}", e)),
 
@@ -221,7 +221,7 @@ impl CliController {
                     .run_full_ingest_pipeline(false, false, false, Some(set_code), false, false)
                     .await
             }
-            2 => self.pipeline().post_ingest_prune().await,
+            2 => self.pipeline().post_ingest_prune(None).await,
             3 => self.pipeline().post_ingest_updates().await,
             _ => Ok(()),
         }

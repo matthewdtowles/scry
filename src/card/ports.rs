@@ -8,6 +8,7 @@ use crate::utils::http_client::HttpClient;
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::NaiveDate;
 use futures::Stream;
 use serde_json::Value;
 use std::pin::Pin;
@@ -54,6 +55,10 @@ pub trait CardRepositoryPort: Send + Sync {
     async fn fetch_in_main_cards_for_set_types(&self, set_types: &[&str]) -> Result<Vec<Card>>;
     async fn fetch_misclassified_as_in_main(&self) -> Result<Vec<Card>>;
     async fn reset_all_data(&self) -> Result<()>;
+    async fn stamp_cards_seen(&self, ids: &[String], date: NaiveDate) -> Result<i64>;
+    async fn count_seen_on(&self, date: NaiveDate) -> Result<i64>;
+    async fn fetch_set_codes_with_cards(&self) -> Result<Vec<String>>;
+    async fn delete_stale_cards(&self, date: NaiveDate) -> Result<i64>;
 }
 
 #[async_trait]
@@ -100,5 +105,17 @@ impl CardRepositoryPort for CardRepository {
     }
     async fn reset_all_data(&self) -> Result<()> {
         CardRepository::reset_all_data(self).await
+    }
+    async fn stamp_cards_seen(&self, ids: &[String], date: NaiveDate) -> Result<i64> {
+        CardRepository::stamp_cards_seen(self, ids, date).await
+    }
+    async fn count_seen_on(&self, date: NaiveDate) -> Result<i64> {
+        CardRepository::count_seen_on(self, date).await
+    }
+    async fn fetch_set_codes_with_cards(&self) -> Result<Vec<String>> {
+        CardRepository::fetch_set_codes_with_cards(self).await
+    }
+    async fn delete_stale_cards(&self, date: NaiveDate) -> Result<i64> {
+        CardRepository::delete_stale_cards(self, date).await
     }
 }

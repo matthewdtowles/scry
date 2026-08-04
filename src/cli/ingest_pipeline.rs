@@ -1,7 +1,7 @@
 use crate::cli::confirm_destructive;
-use crate::ingest::{CardSealedEventProcessor, IngestRecord};
+use crate::ingest::{CardSealedEventProcessor, IngestLedger, IngestRecord};
 use crate::sealed_product::domain::SealedProduct;
-use crate::utils::JsonStreamParser;
+use crate::utils::{clock, JsonStreamParser};
 use crate::{
     card::domain::Card, card::service::CardService, portfolio::service::PortfolioService,
     price::PriceService, published_deck::service::PublishedDeckService,
@@ -11,7 +11,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// The ingest application service: owns pipeline ordering, prune policy, and the
 /// first-error-wins aggregation. It borrows the feature services from the
@@ -51,14 +51,18 @@ impl IngestPipeline<'_> {
             return Ok(());
         }
         let mut first_err: Option<anyhow::Error> = None;
+        // One date for the whole run, fixed before any work starts: a full
+        // ingest can cross UTC midnight, and a run that stamped half its sets
+        // with day N and the rest with N+1 would sweep away its own writes.
+        let ledger = Arc::new(IngestLedger::new(clock::today()));
         if let Err(e) = self
-            .handle_ingest(sets, cards, prices, set_cards, sealed, reset)
+            .handle_ingest(sets, cards, prices, set_cards, sealed, reset, &ledger)
             .await
         {
             error!("Ingestion failed: {}", e);
             first_err.get_or_insert(e);
         }
-        if let Err(e) = self.post_ingest_prune().await {
+        if let Err(e) = self.post_ingest_prune(Some(&ledger)).await {
             error!("Post ingestion pruning failed: {}", e);
             first_err.get_or_insert(e);
         }
@@ -72,6 +76,7 @@ impl IngestPipeline<'_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_ingest(
         &self,
         sets: bool,
@@ -80,6 +85,7 @@ impl IngestPipeline<'_> {
         set_cards: Option<String>,
         sealed: bool,
         reset: bool,
+        ledger: &Arc<IngestLedger>,
     ) -> Result<()> {
         let mut first_err: Option<anyhow::Error> = None;
         if reset {
@@ -109,7 +115,7 @@ impl IngestPipeline<'_> {
         let do_cards = do_all || cards;
         let do_sealed = do_all || sealed;
         if do_cards && do_sealed {
-            match self.ingest_cards_and_sealed().await {
+            match self.ingest_cards_and_sealed(ledger).await {
                 Ok(()) => info!("Card + sealed product ingest completed successfully."),
                 Err(e) => {
                     error!("Card + sealed product ingest failure: {}", e);
@@ -118,7 +124,7 @@ impl IngestPipeline<'_> {
             }
         } else {
             if do_cards {
-                match self.update_cards().await {
+                match self.update_cards(ledger).await {
                     Ok(()) => info!("Card update completed successfully."),
                     Err(e) => {
                         error!("Card update failure: {}", e);
@@ -127,7 +133,7 @@ impl IngestPipeline<'_> {
                 }
             }
             if do_sealed {
-                match self.update_sealed_products().await {
+                match self.update_sealed_products(ledger).await {
                     Ok(()) => info!("Sealed product update completed successfully."),
                     Err(e) => {
                         error!("Sealed product update failure: {}", e);
@@ -167,9 +173,11 @@ impl IngestPipeline<'_> {
         }
     }
 
-    async fn update_sealed_products(&self) -> Result<()> {
+    async fn update_sealed_products(&self, ledger: &Arc<IngestLedger>) -> Result<()> {
         let total_before = self.sealed_product_service.fetch_count().await?;
-        self.sealed_product_service.ingest_all().await?;
+        self.sealed_product_service
+            .ingest_all(ledger.clone())
+            .await?;
         let total_after = self.sealed_product_service.fetch_count().await?;
         info!("Sealed products before: {}", total_before);
         info!("Sealed products after: {}", total_after);
@@ -189,12 +197,12 @@ impl IngestPipeline<'_> {
     /// used by default when both are requested. Sets must already be ingested
     /// (the card path skips unknown sets; sealed is filtered to set codes in
     /// the `set` table).
-    async fn ingest_cards_and_sealed(&self) -> Result<()> {
+    async fn ingest_cards_and_sealed(&self, ledger: &Arc<IngestLedger>) -> Result<()> {
         let cards_before = self.card_service.fetch_count().await?;
         let sealed_before = self.sealed_product_service.fetch_count().await?;
         let valid_set_codes = self.sealed_product_service.fetch_valid_set_codes().await?;
         let start = std::time::Instant::now();
-        let sealed_saved = self.run_single_pass_ingest(valid_set_codes).await?;
+        let sealed_saved = self.run_single_pass_ingest(valid_set_codes, ledger).await?;
         let elapsed = start.elapsed();
         let cards_after = self.card_service.fetch_count().await?;
         let sealed_after = self.sealed_product_service.fetch_count().await?;
@@ -216,7 +224,11 @@ impl IngestPipeline<'_> {
     /// layer because it is inherently cross-module - it drives the card
     /// persistence (`CardService::save_card_batch`) and the sealed persistence
     /// (the sealed repo) from a single stream. Returns sealed products saved.
-    async fn run_single_pass_ingest(&self, valid_set_codes: HashSet<String>) -> Result<i64> {
+    async fn run_single_pass_ingest(
+        &self,
+        valid_set_codes: HashSet<String>,
+        ledger: &Arc<IngestLedger>,
+    ) -> Result<i64> {
         let valid_set_codes = Arc::new(valid_set_codes);
         let card_repo = self.card_service.repository();
         let sealed_repo = self.sealed_product_service.repository();
@@ -228,12 +240,14 @@ impl IngestPipeline<'_> {
         let mut json_stream_parser = JsonStreamParser::new(event_processor);
         let sealed_total = Arc::new(Mutex::new(0i64));
         let sealed_total_for_closure = sealed_total.clone();
+        let ledger_for_closure = ledger.clone();
         json_stream_parser
             .parse_stream(byte_stream, move |batch| {
                 let card_repo = card_repo.clone();
                 let sealed_repo = sealed_repo.clone();
                 let valid_set_codes = valid_set_codes.clone();
                 let sealed_total = sealed_total_for_closure.clone();
+                let ledger = ledger_for_closure.clone();
                 Box::pin(async move {
                     // In practice each batch is homogeneous (only one extractor
                     // flushes per event), but split by variant to be safe.
@@ -246,7 +260,7 @@ impl IngestPipeline<'_> {
                         }
                     }
                     if !cards.is_empty() {
-                        CardService::save_card_batch(&card_repo, cards).await?;
+                        CardService::save_card_batch(&card_repo, cards, &ledger).await?;
                     }
                     if !sealed.is_empty() {
                         let set_code = sealed[0].set_code.clone();
@@ -259,11 +273,27 @@ impl IngestPipeline<'_> {
                                 Ok(count) => {
                                     let mut lock = sealed_total.lock().await;
                                     *lock += count;
+                                    drop(lock);
+                                    let uuids: Vec<String> =
+                                        filtered.iter().map(|p| p.uuid.clone()).collect();
+                                    match sealed_repo.stamp_seen(&uuids, ledger.date()).await {
+                                        Ok(stamped) => ledger.record_sealed(stamped),
+                                        Err(e) => {
+                                            ledger.record_sealed_failure();
+                                            warn!(
+                                                "Failed to stamp sealed products for set {}: {:#}",
+                                                set_code, e
+                                            );
+                                        }
+                                    }
                                 }
-                                Err(e) => warn!(
-                                    "Failed to save sealed products for set {}: {:#}",
-                                    set_code, e
-                                ),
+                                Err(e) => {
+                                    ledger.record_sealed_failure();
+                                    warn!(
+                                        "Failed to save sealed products for set {}: {:#}",
+                                        set_code, e
+                                    )
+                                }
                             }
                         }
                     }
@@ -342,10 +372,10 @@ impl IngestPipeline<'_> {
         Ok(())
     }
 
-    async fn update_cards(&self) -> Result<()> {
+    async fn update_cards(&self, ledger: &Arc<IngestLedger>) -> Result<()> {
         let total_cards_before = self.card_service.fetch_count().await?;
         let total_legalities_before = self.card_service.fetch_legality_count().await?;
-        self.card_service.ingest_all().await?;
+        self.card_service.ingest_all(ledger.clone()).await?;
         let total_cards_after = self.card_service.fetch_count().await?;
         let total_legalities_after = self.card_service.fetch_legality_count().await?;
         info!("Total cards before {}", total_cards_before);
@@ -363,10 +393,56 @@ impl IngestPipeline<'_> {
         Ok(())
     }
 
-    pub async fn post_ingest_prune(&self) -> Result<()> {
+    /// Delete rows MTGJSON no longer lists, then apply the policy prunes.
+    ///
+    /// Ordering is load-bearing: the sweep runs first, because every prune
+    /// below it deletes rows this run just stamped, and the ledger's row-count
+    /// check compares what was stamped against what still carries today's date.
+    /// Run the sweep afterwards and that check fails on every single run.
+    ///
+    /// `ledger` is `None` when `post-ingest-prune` is invoked standalone, with
+    /// no ingest behind it to prove anything about coverage - the sweep is
+    /// skipped entirely in that case.
+    async fn sweep_stale_rows(&self, ledger: &IngestLedger) -> Result<()> {
+        let date = ledger.date();
+        let card_repo = self.card_service.repository();
+        let db_set_codes = card_repo.fetch_set_codes_with_cards().await?;
+        let cards_dated_today = card_repo.count_seen_on(date).await?;
+        if let Some(reason) = ledger.card_sweep_block(&db_set_codes, cards_dated_today) {
+            warn!("Stale-row sweep skipped, catalog coverage unproven: {reason}");
+            return Ok(());
+        }
+        let cards_deleted = card_repo.delete_stale_cards(date).await?;
+        info!(
+            "Stale-row sweep: deleted {} card(s) MTGJSON no longer lists.",
+            cards_deleted
+        );
+
+        // Sealed products ride the same AllPrintings stream, so the card set
+        // coverage cleared above is also this sweep's proof the stream finished.
+        let sealed_repo = self.sealed_product_service.repository();
+        let sealed_dated_today = sealed_repo.count_seen_on(date).await?;
+        if let Some(reason) = ledger.sealed_sweep_block(sealed_dated_today) {
+            debug!("Sealed-product sweep skipped: {reason}");
+            return Ok(());
+        }
+        let sealed_deleted = sealed_repo.delete_stale(date).await?;
+        info!(
+            "Stale-row sweep: deleted {} sealed product(s) MTGJSON no longer lists.",
+            sealed_deleted
+        );
+        Ok(())
+    }
+
+    pub async fn post_ingest_prune(&self, ledger: Option<&IngestLedger>) -> Result<()> {
         info!("Begin post-ingestion pruning of sets and cards.");
         let total_sets_before = self.set_service.fetch_count().await?;
         let total_cards_before = self.card_service.fetch_count().await?;
+
+        match ledger {
+            Some(ledger) => self.sweep_stale_rows(ledger).await?,
+            None => info!("Stale-row sweep skipped: no ingest ran in this process."),
+        }
 
         let cards_deleted = self.card_service.prune_foreign_unpriced().await?;
         info!("Pruned {} foreign cards without prices.", cards_deleted);
