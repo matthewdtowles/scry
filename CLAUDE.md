@@ -147,6 +147,19 @@ Shares the same PostgreSQL database as the NestJS web app ([i-want-my-mtg](https
 
 `granular_price_history` no longer exists - the web repo dropped it in migration 042 (ROADMAP §10.10). `retention` used to try to prune it, which broke the run until [#65](https://github.com/matthewdtowles/scry/pull/65) removed that step ([#63](https://github.com/matthewdtowles/scry/issues/63)).
 
+### Stale-row sweep (`last_seen`)
+
+MTGJSON re-issues a card under a **new uuid** when it corrects preview-season data. Card and sealed upserts key on that uuid, so the superseded row is never touched again and survives forever - [#67](https://github.com/matthewdtowles/scry/issues/67), where a spoiler-era "The Very Hungry Archaic" sat at Secrets of Strixhaven #168 with `in_main = false`, became the set's lowest non-main number, and so demoted every main card above it via `fetch_misclassified_as_in_main`'s boundary (main listing stopped at 168 instead of 281).
+
+Absence from the feed is the only evidence such a row is dead, so `card.last_seen` / `sealed_product.last_seen` (DATE, nullable, web migration 048) record the date each row was last found in `AllPrintings.json`. `IngestPipeline::sweep_stale_rows` deletes whatever the run did not stamp.
+
+- **Stamping is a statement of its own**, never folded into `save_cards` / `SealedProductRepository::save`: those upserts skip rows whose data is unchanged (`ON CONFLICT ... WHERE ... IS DISTINCT FROM`), which is most of the catalog on any day. It is also deliberately *not* called from `save_cards`' other callers (foil dedup, `in_main` fixes) - those re-save rows without having seen them in the feed.
+- **The run's date is fixed once**, in `IngestLedger::new`, because a full ingest can cross UTC midnight and a run that split its stamps across two dates would sweep away its own writes.
+- **The sweep runs first in `post_ingest_prune`**, before every policy prune, because those prunes delete rows the run just stamped and would otherwise break the row-count check on every run.
+- **Two gates, both required** (`IngestLedger::card_sweep_block`). *Set coverage*: every set holding cards must have delivered a batch - this is what catches a truncated stream, which the row count cannot, since a stream dying half way stamps N rows and then finds exactly N carrying today's date. *Row count*: rows stamped must equal rows carrying the run's date - this catches a batch that failed to persist. Sealed adds a third, `record_sealed_failure`, because sealed ingest logs and continues rather than aborting the stream.
+- A set that vanishes from MTGJSON entirely blocks the sweep and names itself in the log. That is intended: a whole set disappearing warrants human eyes, not a silent mass delete.
+- Standalone `post-ingest-prune` passes no ledger, so the sweep is skipped - nothing behind it proves coverage.
+
 Uses SQLx with the `runtime-tokio-rustls` feature. The `ConnectionPool` struct wraps `PgPool` and provides helper methods for common query patterns (count, execute, fetch).
 
 ### Card Filtering
