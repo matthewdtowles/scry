@@ -80,20 +80,40 @@ impl CardService {
             warn!("No cards found for set: {}", set_code);
             return Ok(0);
         }
+        // Merge over the whole set before chunking: a split card's two faces
+        // must both be present for the cross-face mana-cost merge, exactly as
+        // the streaming path flushes one batch per set for that reason.
         let final_cards = Self::merge_and_filter_cards(parsed);
-        if final_cards.is_empty() {
+        let Some(first) = final_cards.first() else {
+            return Ok(0);
+        };
+        // The mapper lowercases `setCode`, so this matches the `set` table
+        // regardless of how the code was typed on the command line - unlike the
+        // raw argument. Sets the ingest filter excludes (online-only,
+        // foreign-only, memorabilia) are absent here, and inserting against one
+        // would fail on card.set_code's foreign key; skip as the streaming path
+        // does instead.
+        let set_code = first.set_code.clone();
+        if !self.repository.set_exists(&set_code).await? {
+            warn!("Skipping cards for missing set {}", set_code);
             return Ok(0);
         }
-        let count = self.repository.save_cards(&final_cards).await?;
-        self.repository.save_legalities(&final_cards).await?;
-        // Stamp for the same reason the streaming path does, so every card
-        // persisted from the feed carries a `last_seen`. No ledger here: a
-        // single-set ingest can never prove catalog coverage, so it never
-        // enables the sweep - the next full ingest is what does.
-        let ids: Vec<String> = final_cards.iter().map(|c| c.id.clone()).collect();
-        self.repository
-            .stamp_cards_seen(&ids, clock::today())
-            .await?;
+        // Chunked for the same reason `save_card_batch` chunks: `save_cards`
+        // binds 22 parameters per card against Postgres's 65535-parameter
+        // ceiling, so one statement caps out near 2978 cards and sets like PLST
+        // (5045) exceed it outright (#69).
+        let today = clock::today();
+        let mut count = 0i64;
+        for chunk in final_cards.chunks(Self::BATCH_SIZE) {
+            count += self.repository.save_cards(chunk).await?;
+            self.repository.save_legalities(chunk).await?;
+            // Stamp for the same reason the streaming path does, so every card
+            // persisted from the feed carries a `last_seen`. No ledger here: a
+            // single-set ingest can never prove catalog coverage, so it never
+            // enables the sweep - the next full ingest is what does.
+            let ids: Vec<String> = chunk.iter().map(|c| c.id.clone()).collect();
+            self.repository.stamp_cards_seen(&ids, today).await?;
+        }
         // Conditional upsert, so `count` is rows changed, not cards seen.
         debug!("Cards ingest for set {}: {} rows changed", set_code, count);
         Ok(count)
@@ -401,8 +421,37 @@ mod tests {
       }
     }"#;
 
-    /// Feeds a canned byte stream instead of hitting MTGJSON.
-    struct FakeDataSource(&'static str);
+    /// A single-set MTGJSON payload (the `<SET>.json` shape `ingest_set_cards`
+    /// fetches) carrying `count` mappable cards.
+    fn set_cards_payload(count: usize) -> Value {
+        let cards: Vec<Value> = (0..count)
+            .map(|i| {
+                serde_json::json!({
+                    "uuid": format!("big-uuid-{i}"),
+                    "name": format!("Big Card {i}"),
+                    "setCode": "BIG",
+                    "number": (i + 1).to_string(),
+                    "type": "Creature",
+                    "rarity": "common",
+                    "identifiers": {"scryfallId": format!("scry-big-{i}")}
+                })
+            })
+            .collect();
+        serde_json::json!({"data": {"type": "expansion", "cards": cards}})
+    }
+
+    /// Feeds a canned byte stream instead of hitting MTGJSON. `set_cards` backs
+    /// the `ingest -k <set>` path.
+    struct FakeDataSource(&'static str, Option<Value>);
+
+    impl FakeDataSource {
+        fn streaming(all_printings: &'static str) -> Self {
+            Self(all_printings, None)
+        }
+        fn set_cards(payload: Value) -> Self {
+            Self("", Some(payload))
+        }
+    }
 
     #[async_trait]
     impl CardDataSource for FakeDataSource {
@@ -413,28 +462,36 @@ mod tests {
             })))
         }
         async fn fetch_set_cards(&self, _set_code: &str) -> Result<Value> {
-            unimplemented!("not exercised by these tests")
+            Ok(self
+                .1
+                .clone()
+                .expect("this fake was built for the streaming path"))
         }
     }
 
-    /// Records the ids handed to `save_cards` and to `stamp_cards_seen`; other
-    /// methods are unused here.
+    /// Records the ids handed to `save_cards` and to `stamp_cards_seen`, plus
+    /// the size of each call so chunking is observable; other methods are
+    /// unused here.
     #[derive(Default)]
     struct SpyRepo {
         saved: StdMutex<Vec<String>>,
         stamped: StdMutex<Vec<(String, NaiveDate)>>,
+        save_sizes: StdMutex<Vec<usize>>,
+        stamp_sizes: StdMutex<Vec<usize>>,
+        set_missing: bool,
     }
 
     #[async_trait]
     impl CardRepositoryPort for SpyRepo {
         async fn set_exists(&self, _code: &str) -> Result<bool> {
-            Ok(true)
+            Ok(!self.set_missing)
         }
         async fn save_cards(&self, cards: &[Card]) -> Result<i64> {
             let mut saved = self.saved.lock().unwrap();
             for c in cards {
                 saved.push(c.id.clone());
             }
+            self.save_sizes.lock().unwrap().push(cards.len());
             Ok(cards.len() as i64)
         }
         async fn save_legalities(&self, _cards: &[Card]) -> Result<()> {
@@ -482,6 +539,7 @@ mod tests {
             for id in ids {
                 stamped.push((id.clone(), date));
             }
+            self.stamp_sizes.lock().unwrap().push(ids.len());
             Ok(ids.len() as i64)
         }
         async fn count_seen_on(&self, _date: NaiveDate) -> Result<i64> {
@@ -504,8 +562,10 @@ mod tests {
     #[tokio::test]
     async fn ingest_all_saves_parsed_cards_through_ports() {
         let repo = Arc::new(SpyRepo::default());
-        let service =
-            CardService::with_ports(Arc::new(FakeDataSource(SAMPLE_ALL_PRINTINGS)), repo.clone());
+        let service = CardService::with_ports(
+            Arc::new(FakeDataSource::streaming(SAMPLE_ALL_PRINTINGS)),
+            repo.clone(),
+        );
 
         service
             .ingest_all(Arc::new(IngestLedger::new(run_date())))
@@ -524,8 +584,10 @@ mod tests {
     async fn ingest_all_stamps_saved_cards_and_records_set_coverage() {
         let repo = Arc::new(SpyRepo::default());
         let ledger = Arc::new(IngestLedger::new(run_date()));
-        let service =
-            CardService::with_ports(Arc::new(FakeDataSource(SAMPLE_ALL_PRINTINGS)), repo.clone());
+        let service = CardService::with_ports(
+            Arc::new(FakeDataSource::streaming(SAMPLE_ALL_PRINTINGS)),
+            repo.clone(),
+        );
 
         service.ingest_all(ledger.clone()).await.unwrap();
 
@@ -545,8 +607,10 @@ mod tests {
     async fn truncated_stream_blocks_the_sweep_despite_matching_counts() {
         let repo = Arc::new(SpyRepo::default());
         let ledger = Arc::new(IngestLedger::new(run_date()));
-        let service =
-            CardService::with_ports(Arc::new(FakeDataSource(SAMPLE_ALL_PRINTINGS)), repo.clone());
+        let service = CardService::with_ports(
+            Arc::new(FakeDataSource::streaming(SAMPLE_ALL_PRINTINGS)),
+            repo.clone(),
+        );
 
         service.ingest_all(ledger.clone()).await.unwrap();
 
@@ -556,6 +620,57 @@ mod tests {
         assert!(
             block.contains("sos"),
             "block reason should name it: {block}"
+        );
+    }
+
+    /// `ingest -k <set>` used to hand the whole set to `save_cards` in one
+    /// statement. That binds 22 parameters per card against Postgres's 65535
+    /// ceiling, so it caps out near 2978 cards and PLST (5045) exceeds it
+    /// outright (#69). Every write in the loop must stay within BATCH_SIZE.
+    #[tokio::test]
+    async fn ingest_set_cards_chunks_writes_under_the_bind_parameter_ceiling() {
+        let card_count = CardService::BATCH_SIZE * 2 + 37;
+        let repo = Arc::new(SpyRepo::default());
+        let service = CardService::with_ports(
+            Arc::new(FakeDataSource::set_cards(set_cards_payload(card_count))),
+            repo.clone(),
+        );
+
+        let changed = service.ingest_set_cards("big").await.unwrap();
+
+        assert_eq!(changed, card_count as i64, "every card is still persisted");
+        let save_sizes = repo.save_sizes.lock().unwrap().clone();
+        let stamp_sizes = repo.stamp_sizes.lock().unwrap().clone();
+        assert_eq!(
+            save_sizes,
+            vec![CardService::BATCH_SIZE, CardService::BATCH_SIZE, 37]
+        );
+        assert_eq!(
+            stamp_sizes, save_sizes,
+            "the stamp follows the same chunking as the save it accompanies"
+        );
+        assert_eq!(repo.saved.lock().unwrap().len(), card_count);
+    }
+
+    /// The streaming path skips a set the ingest filter excluded rather than
+    /// inserting against a `set` row that does not exist (`save_card_batch`).
+    /// `ingest -k prm` took no such guard and would have failed on
+    /// `card.set_code`'s foreign key instead (#69).
+    #[tokio::test]
+    async fn ingest_set_cards_skips_a_set_missing_from_the_db() {
+        let repo = Arc::new(SpyRepo {
+            set_missing: true,
+            ..SpyRepo::default()
+        });
+        let service = CardService::with_ports(
+            Arc::new(FakeDataSource::set_cards(set_cards_payload(3))),
+            repo.clone(),
+        );
+
+        assert_eq!(service.ingest_set_cards("big").await.unwrap(), 0);
+        assert!(
+            repo.saved.lock().unwrap().is_empty(),
+            "nothing may be written for a set the filter excluded"
         );
     }
 
