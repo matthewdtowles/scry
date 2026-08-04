@@ -468,10 +468,10 @@ mod tests {
             })))
         }
         async fn fetch_set_cards(&self, _set_code: &str) -> Result<Value> {
-            Ok(self
-                .1
-                .clone()
-                .expect("this fake was built for the streaming path"))
+            Ok(self.1.clone().expect(
+                "fetch_set_cards called on a fake built for the streaming path; \
+                     construct it with FakeDataSource::set_cards",
+            ))
         }
     }
 
