@@ -93,9 +93,12 @@ impl CardService {
         // foreign-only, memorabilia) are absent here, and inserting against one
         // would fail on card.set_code's foreign key; skip as the streaming path
         // does instead.
-        let set_code = first.set_code.clone();
-        if !self.repository.set_exists(&set_code).await? {
-            warn!("Skipping cards for missing set {}", set_code);
+        // Named apart from the `set_code` argument rather than shadowing it:
+        // the two can differ in case, which is the whole reason this exists, so
+        // logging both under one name would be misleading.
+        let mapped_set_code = first.set_code.clone();
+        if !self.repository.set_exists(&mapped_set_code).await? {
+            warn!("Skipping cards for missing set {}", mapped_set_code);
             return Ok(0);
         }
         // Chunked for the same reason `save_card_batch` chunks: `save_cards`
@@ -115,7 +118,10 @@ impl CardService {
             self.repository.stamp_cards_seen(&ids, today).await?;
         }
         // Conditional upsert, so `count` is rows changed, not cards seen.
-        debug!("Cards ingest for set {}: {} rows changed", set_code, count);
+        debug!(
+            "Cards ingest for set {}: {} rows changed",
+            mapped_set_code, count
+        );
         Ok(count)
     }
 
