@@ -218,10 +218,18 @@ impl PriceService {
         Ok(())
     }
 
+    /// Whether the price table holds the newest data MTGJSON has published.
+    ///
+    /// `>=` rather than `==`: a run straddling the publish hour can hold data
+    /// newer than the expectation computed a moment later, and prices ahead of
+    /// the window are not a staleness problem.
     pub async fn prices_are_current(&self) -> Result<bool> {
         let price_dates = self.repository.fetch_price_dates().await?;
         let expected_date = Price::expected_latest_available_date();
-        Ok(price_dates.iter().max().copied() == Some(expected_date))
+        Ok(price_dates
+            .iter()
+            .max()
+            .is_some_and(|&d| d >= expected_date))
     }
 
     pub async fn fetch_history_size(&self) -> Result<String> {

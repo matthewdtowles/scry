@@ -4,6 +4,14 @@ use tracing::info;
 /// as stale. The ingest cron runs daily, so a larger gap means at least one
 /// run failed to write prices - which is otherwise invisible until someone
 /// notices the site is showing old data.
+///
+/// The ingest now runs after MTGJSON's ~06:10 UTC publish, so the steady state
+/// is a same-day price row and this threshold is a full day of slack: one
+/// skipped upstream build is absorbed silently, two in a row alert. It used to
+/// be neither - the ingest ran at 02:00 UTC, four hours *before* the publish,
+/// so every run wrote the prior day's file and the steady state sat exactly on
+/// this threshold. MTGJSON skipping its 2026-08-06 build was therefore enough
+/// to trip it.
 pub const MAX_PRICE_AGE_DAYS: i64 = 1;
 
 #[derive(Debug)]
@@ -68,8 +76,8 @@ mod tests {
 
     #[test]
     fn test_one_day_old_prices_are_fresh() {
-        // The ingest runs at 02:00 UTC against the prior day's price file, so
-        // a one-day gap is the normal steady state, not a failure.
+        // Slack, not the steady state: the ingest runs after MTGJSON publishes,
+        // so a one-day gap means one upstream build was skipped - tolerated.
         assert!(!status(MAX_PRICE_AGE_DAYS).is_stale());
     }
 
