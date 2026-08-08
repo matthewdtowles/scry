@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use chrono::{Duration, NaiveDate, Timelike};
+use chrono::{DateTime, Duration, NaiveDate, Timelike, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -54,8 +54,15 @@ impl Price {
     /// the window for half the year. The extra ~50 minutes of margin absorbs
     /// a build that runs late.
     pub fn expected_latest_available_date() -> NaiveDate {
+        Self::expected_latest_available_date_at(chrono::Utc::now())
+    }
+
+    /// The cutover itself, taking `now` so the boundary is testable. Splitting
+    /// this out is what lets the tests below pin the hour: reading the clock
+    /// directly, the only thing a test could assert is that some date came
+    /// back.
+    fn expected_latest_available_date_at(now: DateTime<Utc>) -> NaiveDate {
         const PUBLISH_HOUR_UTC: u32 = 7;
-        let now = chrono::Utc::now();
         if now.hour() >= PUBLISH_HOUR_UTC {
             now.date_naive()
         } else {
@@ -124,10 +131,53 @@ mod tests {
         assert!(price.is_err());
     }
 
+    /// A UTC instant on 2026-08-07, the day the ~06:10 publish was observed.
+    fn at(hour: u32, minute: u32) -> DateTime<Utc> {
+        NaiveDate::from_ymd_opt(2026, 8, 7)
+            .unwrap()
+            .and_hms_opt(hour, minute, 0)
+            .unwrap()
+            .and_utc()
+    }
+
     #[test]
-    fn test_expected_latest_available_date() {
-        // This test depends on current time, so we just check it returns a valid date
+    fn test_expected_latest_available_date_uses_current_clock() {
+        // Wired to the real clock; the boundary itself is pinned below.
         let date = Price::expected_latest_available_date();
         assert!(date.year() >= 2024);
+    }
+
+    #[test]
+    fn test_before_publish_hour_expects_yesterday() {
+        // 02:00 UTC is when the ingest used to run - four hours before MTGJSON
+        // published, so the newest prices that existed were the prior day's.
+        let expected = NaiveDate::from_ymd_opt(2026, 8, 6).unwrap();
+        assert_eq!(Price::expected_latest_available_date_at(at(2, 0)), expected);
+        assert_eq!(
+            Price::expected_latest_available_date_at(at(6, 59)),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_at_and_after_publish_hour_expects_today() {
+        // 07:00 UTC is the cutover; 08:00 is where the ingest cron now runs.
+        let expected = NaiveDate::from_ymd_opt(2026, 8, 7).unwrap();
+        assert_eq!(Price::expected_latest_available_date_at(at(7, 0)), expected);
+        assert_eq!(Price::expected_latest_available_date_at(at(8, 0)), expected);
+        assert_eq!(
+            Price::expected_latest_available_date_at(at(23, 59)),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_publish_hour_leaves_margin_after_the_observed_build() {
+        // The build lands ~06:10 UTC. Just after it, the cutover has not yet
+        // flipped - deliberate margin for a late build, not an off-by-one.
+        assert_eq!(
+            Price::expected_latest_available_date_at(at(6, 15)),
+            NaiveDate::from_ymd_opt(2026, 8, 6).unwrap()
+        );
     }
 }

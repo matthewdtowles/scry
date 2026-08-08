@@ -6,8 +6,8 @@ use chrono::{NaiveDate, Utc};
 /// rows, and retention cutoffs all agree on the day. UTC is chosen deliberately:
 /// the production cron all runs in UTC and MTGJSON dates are treated as UTC, so
 /// a container's local timezone must not shift what scry considers "today".
-/// (The MTGJSON 10 AM EST availability cutoff is a separate concern - see
-/// `Price::expected_latest_available_date`.)
+/// (When MTGJSON has actually published a given day's prices is a separate
+/// concern - see `Price::expected_latest_available_date`.)
 pub fn today() -> NaiveDate {
     Utc::now().date_naive()
 }
