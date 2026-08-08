@@ -1,6 +1,5 @@
 use anyhow::{bail, Result};
 use chrono::{Duration, NaiveDate, Timelike};
-use chrono_tz::America::New_York;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -42,17 +41,25 @@ impl Price {
         })
     }
 
-    /// Calculate the expected latest available price date
+    /// Calculate the expected latest available price date.
     ///
-    /// MTG JSON updates prices at 10 AM EST. Before that time, yesterday's
-    /// prices are the latest available.
+    /// MTGJSON rebuilds the bulk files once a day at ~06:10 UTC - observed
+    /// 2026-08-07, where `AllPricesToday.json`, `AllPrintings.json` and
+    /// `AllPrices.json` all carried `last-modified` between 06:09:55 and
+    /// 06:10:14 UTC. Before that hour the newest prices that exist anywhere
+    /// are yesterday's, so expecting today's would be wrong.
+    ///
+    /// Expressed in UTC rather than US/Eastern: the publish time tracks UTC,
+    /// so an Eastern cutover would drift by an hour across DST and misjudge
+    /// the window for half the year. The extra ~50 minutes of margin absorbs
+    /// a build that runs late.
     pub fn expected_latest_available_date() -> NaiveDate {
-        let est_now = chrono::Utc::now().with_timezone(&New_York);
-        const EST_UPDATE_HOUR: u32 = 10;
-        if est_now.hour() >= EST_UPDATE_HOUR {
-            est_now.date_naive()
+        const PUBLISH_HOUR_UTC: u32 = 7;
+        let now = chrono::Utc::now();
+        if now.hour() >= PUBLISH_HOUR_UTC {
+            now.date_naive()
         } else {
-            est_now.date_naive() - Duration::days(1)
+            now.date_naive() - Duration::days(1)
         }
     }
 }
