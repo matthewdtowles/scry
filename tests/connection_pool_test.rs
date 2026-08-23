@@ -35,10 +35,13 @@ async fn pooled_connections_carry_the_configured_timeouts() {
         .expect("after_connect must not reject the connection");
 
     // pg_settings reports these in milliseconds.
-    let setting = |name: &str| format!("SELECT setting::bigint FROM pg_settings WHERE name = '{name}'");
+    let setting =
+        |name: &str| format!("SELECT setting::bigint FROM pg_settings WHERE name = '{name}'");
 
     assert_eq!(
-        pool.scalar_i64(&setting("statement_timeout")).await.unwrap(),
+        pool.scalar_i64(&setting("statement_timeout"))
+            .await
+            .unwrap(),
         61_000,
         "statement_timeout did not reach the connection"
     );
