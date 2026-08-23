@@ -18,6 +18,9 @@ pub async fn setup_test_db() -> Arc<ConnectionPool> {
     let config = Config {
         database_url,
         max_pool_size: 5,
+        statement_timeout_ms: 600_000,
+        lock_timeout_ms: 30_000,
+        command_timeout_seconds: 1_800,
     };
 
     let pool = ConnectionPool::new(&config)

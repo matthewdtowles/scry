@@ -5,7 +5,8 @@ use scry::config::Config;
 use scry::utils::HttpClient;
 use scry::{card, database, health_check, portfolio, price, published_deck, sealed_product, set};
 use std::sync::Arc;
-use tracing::info;
+use std::time::Duration;
+use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -52,9 +53,32 @@ async fn main() -> Result<()> {
         published_deck_service,
     );
 
-    if let Err(e) = cli_controller.handle_command(cli.command).await {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
+    // Backstop for a wedge the database-side timeouts cannot catch. Those are
+    // enforced by Postgres, so they only help while the connection still
+    // carries replies back; if the socket dies silently the client waits on a
+    // read that will never complete. This deadline is ours, so it always fires,
+    // and - unlike scry.sh's `timeout`, which SIGTERMs a process that has
+    // logged nothing for an hour - it names the run that overran before exiting.
+    let deadline = Duration::from_secs(config.command_timeout_seconds);
+    match tokio::time::timeout(deadline, cli_controller.handle_command(cli.command)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        Err(_) => {
+            error!(
+                "Command exceeded its {}s deadline and was aborted. The last log line above is the \
+                 phase it wedged in. Raise SCRY_COMMAND_TIMEOUT_SECONDS if this run is legitimately \
+                 that long.",
+                config.command_timeout_seconds
+            );
+            eprintln!(
+                "Error: command exceeded its {}s deadline (SCRY_COMMAND_TIMEOUT_SECONDS)",
+                config.command_timeout_seconds
+            );
+            std::process::exit(1);
+        }
     }
     info!("* * * * * * * * * * * * *");
     info!("* * * Scry complete * * *");

@@ -2,9 +2,10 @@ use crate::config::Config;
 use anyhow::Result;
 use sqlx::{
     postgres::{PgPoolOptions, PgRow},
-    FromRow, PgPool, Postgres, QueryBuilder, Row,
+    Executor, FromRow, PgPool, Postgres, QueryBuilder, Row,
 };
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct ConnectionPool {
@@ -13,8 +14,38 @@ pub struct ConnectionPool {
 
 impl ConnectionPool {
     pub async fn new(config: &Config) -> Result<Self> {
+        // Postgres waits forever by default, and the managed instance leaves it
+        // that way: `SHOW statement_timeout` and `SHOW lock_timeout` are both 0.
+        // So a query that hits a row lock held by the web app - an FK check on
+        // `card` from an inventory or deck write is enough - blocks with no CPU,
+        // no log line and no end. That is what the 2026-08-22 ingest did: it
+        // stopped mid-card-ingest at 08:01, sat at 98% idle CPU for 59 minutes,
+        // and was killed by scry.sh's shell timeout at 09:00 having written
+        // nothing since. The 2026-07-21 wedge had the same signature.
+        //
+        // These three settings turn an unbounded wait into an error, which
+        // becomes a non-zero exit and a cron mail within seconds instead of an
+        // hour. They are per-connection, applied on checkout, so they cover
+        // every query the process makes.
+        let statement_timeout_ms = config.statement_timeout_ms;
+        let lock_timeout_ms = config.lock_timeout_ms;
         let pool = PgPoolOptions::new()
             .max_connections(config.max_pool_size)
+            .acquire_timeout(Duration::from_secs(30))
+            .after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    conn.execute(
+                        format!(
+                            "SET statement_timeout = {statement_timeout_ms}; \
+                             SET lock_timeout = {lock_timeout_ms}; \
+                             SET idle_in_transaction_session_timeout = {statement_timeout_ms}"
+                        )
+                        .as_str(),
+                    )
+                    .await?;
+                    Ok(())
+                })
+            })
             .connect(&config.database_url)
             .await?;
 
