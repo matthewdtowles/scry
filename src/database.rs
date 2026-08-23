@@ -27,6 +27,15 @@ impl ConnectionPool {
         // becomes a non-zero exit and a cron mail within seconds instead of an
         // hour. They are per-connection, applied on checkout, so they cover
         // every query the process makes.
+        // The three SETs go in one string, which is legal only over Postgres's
+        // *simple* query protocol - and that is what sqlx uses here, because
+        // this query binds no arguments. Bind a parameter into it and sqlx
+        // switches to the extended protocol, where multi-command query text is
+        // rejected and every connection would fail to open. Interpolating the
+        // values is therefore load-bearing, not laziness; they are u64 from
+        // config, never user input. `pooled_connections_carry_the_configured_timeouts`
+        // asserts all three settings arrive, so a break here fails a test
+        // rather than taking the ETL down.
         let statement_timeout_ms = config.statement_timeout_ms;
         let lock_timeout_ms = config.lock_timeout_ms;
         let pool = PgPoolOptions::new()
