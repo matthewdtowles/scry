@@ -55,18 +55,38 @@ impl IngestPipeline<'_> {
         // ingest can cross UTC midnight, and a run that stamped half its sets
         // with day N and the rest with N+1 would sweep away its own writes.
         let ledger = Arc::new(IngestLedger::new(clock::today()));
-        if let Err(e) = self
+        let ingest_ok = match self
             .handle_ingest(sets, cards, prices, set_cards, sealed, reset, &ledger)
             .await
         {
-            error!("Ingestion failed: {}", e);
-            first_err.get_or_insert(e);
-        }
-        if let Err(e) = self.post_ingest_prune(Some(&ledger)).await {
+            Ok(()) => true,
+            Err(e) => {
+                error!("Ingestion failed: {}", e);
+                first_err.get_or_insert(e);
+                false
+            }
+        };
+        // The prunes below decide what to delete from what is in the database
+        // *now*, on the assumption the ingest above just brought it up to date.
+        // Over a half-written catalog that assumption is false and the deletes
+        // are destructive: the 2026-08-22 run died partway through the card
+        // stream, at a set beginning with F, so every set alphabetically after
+        // it held zero cards - exactly what `prune_empty_sets` exists to delete.
+        // Only the stale-row sweep was guarded (via the ledger); the four
+        // policy prunes would have run. A failed ingest leaves the catalog
+        // as-is for the next run to fix rather than pruning against it.
+        if !ingest_ok {
+            warn!("Post-ingestion pruning skipped: the ingest failed, so the catalog is incomplete and the prunes would delete cards and sets the ingest simply never reached.");
+        } else if let Err(e) = self.post_ingest_prune(Some(&ledger)).await {
             error!("Post ingestion pruning failed: {}", e);
             first_err.get_or_insert(e);
         }
-        if let Err(e) = self.post_ingest_updates().await {
+        // Updates are recomputations (set sizes, price rollups, snapshots), not
+        // deletes, so they still run - but only over a catalog the ingest
+        // finished, or they would persist sizes and prices for a partial one.
+        if !ingest_ok {
+            warn!("Post-ingestion updates skipped: the ingest failed, so set sizes and price rollups would be computed from an incomplete catalog.");
+        } else if let Err(e) = self.post_ingest_updates().await {
             error!("Post ingestion updates failed: {}", e);
             first_err.get_or_insert(e);
         }
@@ -453,14 +473,21 @@ impl IngestPipeline<'_> {
             .await?;
         info!("Pruned {} sets missing prices.", sets_deleted);
 
-        let sets_deleted = self.set_service.prune_empty_sets().await?;
-        info!("Pruned {} sets without any cards.", sets_deleted);
-
         let cards_deleted = self
             .card_service
             .prune_duplicate_foils(self.price_service)
             .await?;
         info!("Pruned {} duplicate foil cards.", cards_deleted);
+
+        // Last, after every prune above has finished deleting cards. This used
+        // to run before `prune_duplicate_foils`, so a set whose whole card list
+        // was duplicate foils survived the emptiness check and then lost its
+        // cards - leaving a set with zero cards in the catalog, which both the
+        // web and mobile set lists render as a real, browsable, empty set.
+        // Nothing after this point deletes a card, so this is the only ordering
+        // where the check sees the final card counts.
+        let sets_deleted = self.set_service.prune_empty_sets().await?;
+        info!("Pruned {} sets without any cards.", sets_deleted);
 
         let total_sets_after = self.set_service.fetch_count().await?;
         let total_cards_after = self.card_service.fetch_count().await?;
