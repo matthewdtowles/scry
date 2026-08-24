@@ -383,18 +383,14 @@ impl IngestPipeline<'_> {
         // keeps its exit code; you just get told, once, on the morning it
         // happens rather than inferring it from the damage two days later.
         let currency = self.price_service.price_currency().await?;
-        if currency.is_current() {
-            info!("Price table is up to date.");
-        } else {
-            warn!(
-                "MTGJSON's price feed has not advanced: {}",
-                currency.describe()
-            );
-            eprintln!(
-                "NOTICE: MTGJSON's price feed has not advanced - {}. The ingest itself \
-                 succeeded; prices are unchanged because upstream published no new build.",
-                currency.describe()
-            );
+        match currency.alert() {
+            None => info!("Price table is up to date."),
+            // Built once and used for both sinks, so the log line and the mail
+            // can never say different things.
+            Some(alert) => {
+                warn!("{alert}");
+                eprintln!("NOTICE: {alert}");
+            }
         }
         // Averaged prices are fully refreshed and cleaned up above; surface any
         // best-effort CK-direct failure last so the run exits non-zero (alerting)

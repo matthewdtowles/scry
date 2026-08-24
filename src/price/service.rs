@@ -36,18 +36,32 @@ impl PriceCurrency {
         self.newest.is_some_and(|d| d >= self.expected)
     }
 
-    /// How this reads in an alert.
-    pub fn describe(&self) -> String {
-        match self.newest {
+    /// The whole alert line, or `None` when the table is current.
+    ///
+    /// Returns the complete sentence rather than a fragment a caller prefixes.
+    /// An earlier revision had the caller write "MTGJSON's price feed has not
+    /// advanced: {fragment}", which was wrong for the empty-table case - the
+    /// feed advancing has nothing to do with a `price` table that holds no rows
+    /// at all, and that is a far more alarming state than a skipped upstream
+    /// build. Owning the full wording here means the two cases cannot be
+    /// described as the same thing, and callers cannot drift from each other.
+    pub fn alert(&self) -> Option<String> {
+        if self.is_current() {
+            return None;
+        }
+        Some(match self.newest {
             Some(newest) => format!(
-                "newest priced build is {newest}, expected {}",
+                "MTGJSON's price feed has not advanced - newest priced build is {newest}, \
+                 expected {}. The ingest itself succeeded; prices are unchanged because \
+                 upstream published no new build.",
                 self.expected
             ),
             None => format!(
-                "the price table is empty, expected a {} build",
+                "the price table is EMPTY after a completed ingest - expected a {} build. \
+                 This is not a skipped upstream build; no prices are being served at all.",
                 self.expected
             ),
-        }
+        })
     }
 }
 
@@ -387,10 +401,21 @@ mod currency_tests {
             expected: d(21),
         };
         assert!(!c.is_current());
-        assert_eq!(
-            c.describe(),
-            "newest priced build is 2026-08-20, expected 2026-08-21"
-        );
+        let alert = c.alert().expect("a stalled feed must alert");
+        assert!(alert.contains("has not advanced"), "{alert}");
+        assert!(alert.contains("2026-08-20"), "{alert}");
+        assert!(alert.contains("2026-08-21"), "{alert}");
+    }
+
+    /// A current table must not produce an alert at all - this is what keeps a
+    /// healthy night silent instead of mailing every morning.
+    #[test]
+    fn a_current_feed_produces_no_alert() {
+        let c = PriceCurrency {
+            newest: Some(d(21)),
+            expected: d(21),
+        };
+        assert_eq!(c.alert(), None);
     }
 
     /// #71's semantics, and the reason this is `>=` and not `==`: a run that
@@ -406,16 +431,22 @@ mod currency_tests {
         assert!(c.is_current());
     }
 
+    /// An empty table is a different problem from a skipped upstream build, and
+    /// must not be reported as one. Collapse the two branches of `alert()` into
+    /// a single message and this fails.
     #[test]
-    fn an_empty_price_table_is_not_current_and_says_so() {
+    fn an_empty_price_table_is_not_described_as_a_stalled_feed() {
         let c = PriceCurrency {
             newest: None,
             expected: d(21),
         };
         assert!(!c.is_current());
-        assert_eq!(
-            c.describe(),
-            "the price table is empty, expected a 2026-08-21 build"
+        let alert = c.alert().expect("an empty table must alert");
+        assert!(alert.contains("EMPTY"), "{alert}");
+        assert!(alert.contains("2026-08-21"), "{alert}");
+        assert!(
+            !alert.contains("has not advanced"),
+            "an empty table is not a stalled feed: {alert}"
         );
     }
 }
