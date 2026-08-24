@@ -360,6 +360,17 @@ impl IngestPipeline<'_> {
             }
         };
         self.price_service.clean_up_prices().await?;
+        // After the cleanup, never before: that deletes on a global MAX(date)
+        // and would wipe exactly the older-dated rows this writes. Running it
+        // here also means the carried set is re-derived from scratch each day
+        // instead of accumulating.
+        let carried = self.price_service.carry_forward_prices().await?;
+        if carried > 0 {
+            info!(
+                "Carried forward {} price(s) for cards today's build did not mention.",
+                carried
+            );
+        }
         let total_prices_after = self.price_service.fetch_price_count().await?;
         let total_history_after = self.price_service.fetch_price_history_count().await?;
         info!("Total prices before: {}", total_prices_before);

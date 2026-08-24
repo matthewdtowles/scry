@@ -144,6 +144,57 @@ impl PriceRepository {
         self.db.execute_query_builder(query_builder).await
     }
 
+    /// Re-price cards that today's MTGJSON build simply did not mention, using
+    /// the newest value `price_history` holds for them within `max_age_days`.
+    ///
+    /// Thin-volume cards flicker in and out of the feed. Black Lotus (2ED) was
+    /// priced on 08-16, 08-17, 08-18 and 08-22 and absent on 08-19, 08-20 and
+    /// 08-23 - so the single most recognisable card in the game showed no price
+    /// on roughly half the days. Around 2-10 cards a day do this, and they skew
+    /// expensive, because a card with few listings is exactly the card whose
+    /// listings sometimes number zero.
+    ///
+    /// The carried row keeps the date it was actually observed on, not today's.
+    /// That is what makes this honest rather than a fabrication: the web's
+    /// "latest price" predicate is correlated per card
+    /// (`p.date = (SELECT MAX(p2.date) ... WHERE p2.card_id = card.id)`), so an
+    /// older-dated row is still that card's latest and every read path picks it
+    /// up unchanged - while `price.date` still says precisely how old the
+    /// number is, with no extra column to carry it.
+    ///
+    /// MUST run after `delete_prices_before_latest`, which deletes on a *global*
+    /// `MAX(date)` and would otherwise wipe exactly these rows. Running after it
+    /// also means each day's carried set is re-derived from scratch rather than
+    /// accumulating.
+    ///
+    /// Only fills cards with **no** row at all. A card whose row survived with a
+    /// foil price but no normal one is left alone: today's row would win the
+    /// date comparison anyway, and those cards already display their foil price
+    /// through the normal/foil fallback rather than showing a blank.
+    ///
+    /// Deliberately does not touch `price_history`. That table is the record of
+    /// what upstream actually published; writing carried values into it would
+    /// make the history self-referential and freeze a stale number into the
+    /// retention tiers forever.
+    pub async fn carry_forward_missing_prices(&self, max_age_days: i64) -> Result<i64> {
+        // `max_age_days` is a caller-owned constant, never user input.
+        let query = format!(
+            "INSERT INTO {p} (card_id, normal, foil, date) \
+             SELECT DISTINCT ON (h.card_id) h.card_id, h.normal, h.foil, h.date \
+             FROM {h} h \
+             WHERE h.date >= CURRENT_DATE - {days} \
+               AND (h.normal IS NOT NULL OR h.foil IS NOT NULL) \
+               AND NOT EXISTS (SELECT 1 FROM {p} p WHERE p.card_id = h.card_id) \
+             ORDER BY h.card_id, h.date DESC \
+             ON CONFLICT (card_id, date) DO NOTHING",
+            p = Self::PRICE_TABLE,
+            h = Self::PRICE_HISTORY_TABLE,
+            days = max_age_days
+        );
+        let query_builder = QueryBuilder::new(query);
+        self.db.execute_query_builder(query_builder).await
+    }
+
     pub async fn fetch_prices_for_card_ids(
         &self,
         card_ids: &[String],

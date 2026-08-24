@@ -323,3 +323,123 @@ async fn test_fetch_scryfall_card_id_map() {
         Some("p14-c1")
     );
 }
+
+/// The Black Lotus case: a card priced on some days and simply absent from
+/// MTGJSON's build on others, so its price blinks out and back.
+///
+/// Asserts the three things that make the carry-forward honest rather than a
+/// fabrication:
+///  - a card with no row today gets one, from its newest history,
+///  - that row keeps the date it was really observed on, not today's, so the
+///    staleness is still legible without an extra column,
+///  - a card that already has a price today is left completely alone.
+#[tokio::test]
+#[ignore]
+async fn test_carry_forward_fills_only_missing_prices_and_keeps_the_observed_date() {
+    let db = common::setup_test_db().await;
+    let set_repo = SetRepository::new(db.clone());
+    let card_repo = CardRepository::new(db.clone());
+    let price_repo = PriceRepository::new(db.clone());
+
+    set_repo
+        .save_sets(&[common::create_test_set("cf1")])
+        .await
+        .unwrap();
+    card_repo
+        .save_cards(&[
+            common::create_test_card("cf1-gone", "cf1"),
+            common::create_test_card("cf1-priced", "cf1"),
+            common::create_test_card("cf1-ancient", "cf1"),
+        ])
+        .await
+        .unwrap();
+
+    let today = chrono::Utc::now().date_naive();
+    let observed = today - chrono::Duration::days(3);
+    let too_old = today - chrono::Duration::days(90);
+
+    // History: a recent observation for the flickering card, a stale one for a
+    // card that stopped trading months ago, and a newer-but-superseded row to
+    // prove DISTINCT ON picks the newest.
+    price_repo
+        .save_price_history(&[
+            Price {
+                card_id: "cf1-gone".into(),
+                normal: Some(Decimal::try_from(32999.99).unwrap()),
+                foil: None,
+                date: observed,
+            },
+            Price {
+                card_id: "cf1-gone".into(),
+                normal: Some(Decimal::try_from(6500.0).unwrap()),
+                foil: None,
+                date: today - chrono::Duration::days(5),
+            },
+            Price {
+                card_id: "cf1-ancient".into(),
+                normal: Some(Decimal::try_from(10.0).unwrap()),
+                foil: None,
+                date: too_old,
+            },
+            // The already-priced card needs history too, or the NOT EXISTS
+            // guard is never actually exercised: with no history row there is
+            // nothing for the insert to have wrongly carried, and dropping the
+            // guard would look harmless.
+            Price {
+                card_id: "cf1-priced".into(),
+                normal: Some(Decimal::try_from(999.0).unwrap()),
+                foil: None,
+                date: observed,
+            },
+        ])
+        .await
+        .unwrap();
+
+    // Today's build mentioned only `cf1-priced`.
+    price_repo
+        .save_prices(&[Price {
+            card_id: "cf1-priced".into(),
+            normal: Some(Decimal::try_from(1.25).unwrap()),
+            foil: None,
+            date: today,
+        }])
+        .await
+        .unwrap();
+
+    // Deliberately not asserting the returned count: carry-forward operates on
+    // the whole table, so any other test that leaves a card with history and no
+    // price would change it. The scoped row assertions below are what matter,
+    // and they are strictly stronger - dropping the NOT EXISTS guard or widening
+    // the age cutoff each add a third `cf1-` row and fail on the count below.
+    price_repo.carry_forward_missing_prices(30).await.unwrap();
+
+    let qb = QueryBuilder::new(
+        "SELECT card_id, normal, date FROM price WHERE card_id LIKE 'cf1-%' ORDER BY card_id",
+    );
+    let rows: Vec<(String, Option<Decimal>, NaiveDate)> =
+        db.fetch_all_query_builder(qb).await.unwrap();
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "expected exactly the carried row and today's row: the 90-day-old card must \
+         stay unpriced, and the already-priced card must not gain a second, older row"
+    );
+
+    let gone = rows
+        .iter()
+        .find(|r| r.0 == "cf1-gone")
+        .expect("carried row");
+    assert_eq!(gone.1, Some(Decimal::try_from(32999.99).unwrap()));
+    assert_eq!(
+        gone.2, observed,
+        "the carried row must keep the date it was observed, not today's"
+    );
+
+    let priced = rows
+        .iter()
+        .find(|r| r.0 == "cf1-priced")
+        .expect("today's row");
+    assert_eq!(priced.1, Some(Decimal::try_from(1.25).unwrap()));
+    assert_eq!(priced.2, today, "a card priced today must be untouched");
+}
