@@ -259,7 +259,6 @@ impl PriceService {
         Ok(())
     }
 
-    /// Remove all prices older than the latest price date, in one statement (§5).
     /// How far back to look for a price to carry forward.
     ///
     /// Chosen to match the retention tiers - daily for 7 days, weekly to 28,
@@ -267,7 +266,7 @@ impl PriceService {
     /// roughly a month a frozen number is more misleading than an absent one:
     /// a card that stopped trading should eventually read as having no price
     /// rather than holding whatever it last sold for.
-    pub const CARRY_FORWARD_MAX_AGE_DAYS: i64 = 30;
+    pub const CARRY_FORWARD_MAX_AGE_DAYS: i32 = 30;
 
     /// Fill in cards today's build did not mention, from the newest price we
     /// have for them. See [`PriceRepository::carry_forward_missing_prices`] for
@@ -280,6 +279,7 @@ impl PriceService {
         Ok(carried)
     }
 
+    /// Remove all prices older than the latest price date, in one statement (§5).
     pub async fn clean_up_prices(&self) -> Result<()> {
         let deleted = self.repository.delete_prices_before_latest().await?;
         if deleted == 0 {

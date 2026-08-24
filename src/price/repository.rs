@@ -176,22 +176,26 @@ impl PriceRepository {
     /// what upstream actually published; writing carried values into it would
     /// make the history self-referential and freeze a stale number into the
     /// retention tiers forever.
-    pub async fn carry_forward_missing_prices(&self, max_age_days: i64) -> Result<i64> {
-        // `max_age_days` is a caller-owned constant, never user input.
-        let query = format!(
+    pub async fn carry_forward_missing_prices(&self, max_age_days: i32) -> Result<i64> {
+        // Table names are interpolated because identifiers cannot be bound;
+        // `max_age_days` is a value, so it is bound. `i32` rather than `i64`
+        // because Postgres defines `date - int4`, not `date - int8`.
+        let mut query_builder = QueryBuilder::new(format!(
             "INSERT INTO {p} (card_id, normal, foil, date) \
              SELECT DISTINCT ON (h.card_id) h.card_id, h.normal, h.foil, h.date \
              FROM {h} h \
-             WHERE h.date >= CURRENT_DATE - {days} \
-               AND (h.normal IS NOT NULL OR h.foil IS NOT NULL) \
+             WHERE h.date >= CURRENT_DATE - ",
+            p = Self::PRICE_TABLE,
+            h = Self::PRICE_HISTORY_TABLE,
+        ));
+        query_builder.push_bind(max_age_days);
+        query_builder.push(format!(
+            " AND (h.normal IS NOT NULL OR h.foil IS NOT NULL) \
                AND NOT EXISTS (SELECT 1 FROM {p} p WHERE p.card_id = h.card_id) \
              ORDER BY h.card_id, h.date DESC \
              ON CONFLICT (card_id, date) DO NOTHING",
             p = Self::PRICE_TABLE,
-            h = Self::PRICE_HISTORY_TABLE,
-            days = max_age_days
-        );
-        let query_builder = QueryBuilder::new(query);
+        ));
         self.db.execute_query_builder(query_builder).await
     }
 
