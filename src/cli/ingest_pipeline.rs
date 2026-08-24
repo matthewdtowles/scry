@@ -366,11 +366,31 @@ impl IngestPipeline<'_> {
         info!("Total prices after: {}", total_prices_after);
         info!("Total prices in history before: {}", total_history_before);
         info!("Total prices in history after: {}", total_history_after);
-        let has_current_prices = self.price_service.prices_are_current().await?;
-        if has_current_prices {
-            info!("Price table is up to date.");
-        } else {
-            warn!("Prices for today's date not yet available.");
+        // A feed that has not advanced is the one failure mode where every
+        // step genuinely succeeds: the file is fetched, parsed and saved, and
+        // `clean_up_prices` drops everything below MAX(date) - which is the
+        // date it already was. Nothing raises, so the run exits 0.
+        //
+        // That is why this goes to stderr. Cron redirects stdout to the log and
+        // mails stderr (see `MAILTO` in the web repo's cron/i-want-my-mtg), so
+        // a `warn!` here is buried in ten thousand lines nobody reads, which is
+        // exactly how 2026-08-21's stalled feed went unnoticed until the 8/22
+        // ingest wedged and the two failures compounded into a two-day gap.
+        //
+        // Deliberately NOT an error exit. MTGJSON skipping a build is upstream's
+        // schedule, not scry's failure, and the 08:00 cron slot plus the 09:00
+        // retry would turn one skipped build into two alerts a day. The run
+        // keeps its exit code; you just get told, once, on the morning it
+        // happens rather than inferring it from the damage two days later.
+        let currency = self.price_service.price_currency().await?;
+        match currency.alert() {
+            None => info!("Price table is up to date."),
+            // Built once and used for both sinks, so the log line and the mail
+            // can never say different things.
+            Some(alert) => {
+                warn!("{alert}");
+                eprintln!("NOTICE: {alert}");
+            }
         }
         // Averaged prices are fully refreshed and cleaned up above; surface any
         // best-effort CK-direct failure last so the run exits non-zero (alerting)

@@ -13,6 +13,58 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+/// How fresh the averaged `price` table is against MTGJSON's publishing
+/// schedule.
+///
+/// A pair rather than a bare bool because this gets reported to a human:
+/// "newest priced build is 2026-08-20, expected 2026-08-21" says what to go
+/// look at, where "not current" does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PriceCurrency {
+    /// The date on the newest row in `price`, or `None` when the table is empty.
+    pub newest: Option<NaiveDate>,
+    /// The build date MTGJSON should have published by now.
+    pub expected: NaiveDate,
+}
+
+impl PriceCurrency {
+    /// `>=`, not `==`. A run straddling the publish hour can hold data newer
+    /// than an expectation computed a moment later, and prices ahead of the
+    /// window are not a staleness problem. This is the semantics #71 settled
+    /// on; keep it.
+    pub fn is_current(&self) -> bool {
+        self.newest.is_some_and(|d| d >= self.expected)
+    }
+
+    /// The whole alert line, or `None` when the table is current.
+    ///
+    /// Returns the complete sentence rather than a fragment a caller prefixes.
+    /// An earlier revision had the caller write "MTGJSON's price feed has not
+    /// advanced: {fragment}", which was wrong for the empty-table case - the
+    /// feed advancing has nothing to do with a `price` table that holds no rows
+    /// at all, and that is a far more alarming state than a skipped upstream
+    /// build. Owning the full wording here means the two cases cannot be
+    /// described as the same thing, and callers cannot drift from each other.
+    pub fn alert(&self) -> Option<String> {
+        if self.is_current() {
+            return None;
+        }
+        Some(match self.newest {
+            Some(newest) => format!(
+                "MTGJSON's price feed has not advanced - newest priced build is {newest}, \
+                 expected {}. The ingest itself succeeded; prices are unchanged because \
+                 upstream published no new build.",
+                self.expected
+            ),
+            None => format!(
+                "the price table is EMPTY after a completed ingest - expected a {} build. \
+                 This is not a skipped upstream build; no prices are being served at all.",
+                self.expected
+            ),
+        })
+    }
+}
+
 const BATCH_SIZE: usize = 500;
 /// Emit an info-level progress line roughly every this many cards so a slow but
 /// healthy stream is visible at the default `scry=info` verbosity.
@@ -218,18 +270,18 @@ impl PriceService {
         Ok(())
     }
 
-    /// Whether the price table holds the newest data MTGJSON has published.
+    /// Whether `price` reflects the newest MTGJSON build, and the two dates
+    /// behind that verdict.
     ///
-    /// `>=` rather than `==`: a run straddling the publish hour can hold data
-    /// newer than the expectation computed a moment later, and prices ahead of
-    /// the window are not a staleness problem.
-    pub async fn prices_are_current(&self) -> Result<bool> {
+    /// `clean_up_prices` drops every date but the newest, so `newest` is the
+    /// build the last successful ingest actually wrote - which is exactly what
+    /// `scry health` later measures against `CURRENT_DATE`.
+    pub async fn price_currency(&self) -> Result<PriceCurrency> {
         let price_dates = self.repository.fetch_price_dates().await?;
-        let expected_date = Price::expected_latest_available_date();
-        Ok(price_dates
-            .iter()
-            .max()
-            .is_some_and(|&d| d >= expected_date))
+        Ok(PriceCurrency {
+            newest: price_dates.iter().max().copied(),
+            expected: Price::expected_latest_available_date(),
+        })
     }
 
     pub async fn fetch_history_size(&self) -> Result<String> {
@@ -318,5 +370,83 @@ impl PriceService {
             debug!("Saved batch of {} prices to history table.", history_count);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod currency_tests {
+    use super::*;
+
+    fn d(day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 8, day).unwrap()
+    }
+
+    #[test]
+    fn a_feed_that_advanced_is_current() {
+        let c = PriceCurrency {
+            newest: Some(d(21)),
+            expected: d(21),
+        };
+        assert!(c.is_current());
+    }
+
+    /// The shape of the 2026-08-21 run: the ingest fetched, parsed and wrote,
+    /// but the build it was served was the one it already had. Every step
+    /// succeeded, which is exactly why nothing below it raises and why this has
+    /// to be noticed here.
+    #[test]
+    fn a_feed_that_did_not_advance_names_both_dates() {
+        let c = PriceCurrency {
+            newest: Some(d(20)),
+            expected: d(21),
+        };
+        assert!(!c.is_current());
+        let alert = c.alert().expect("a stalled feed must alert");
+        assert!(alert.contains("has not advanced"), "{alert}");
+        assert!(alert.contains("2026-08-20"), "{alert}");
+        assert!(alert.contains("2026-08-21"), "{alert}");
+    }
+
+    /// A current table must not produce an alert at all - this is what keeps a
+    /// healthy night silent instead of mailing every morning.
+    #[test]
+    fn a_current_feed_produces_no_alert() {
+        let c = PriceCurrency {
+            newest: Some(d(21)),
+            expected: d(21),
+        };
+        assert_eq!(c.alert(), None);
+    }
+
+    /// #71's semantics, and the reason this is `>=` and not `==`: a run that
+    /// straddles the publish hour can hold data newer than an expectation
+    /// computed a moment later. Being ahead of the window is not staleness.
+    /// Flip `is_current` to `==` and this test fails.
+    #[test]
+    fn a_feed_ahead_of_the_window_is_still_current() {
+        let c = PriceCurrency {
+            newest: Some(d(22)),
+            expected: d(21),
+        };
+        assert!(c.is_current());
+    }
+
+    /// An empty table is a different problem from a skipped upstream build, and
+    /// must not be reported as one. Collapse the two branches of `alert()` into
+    /// a single message and this fails.
+    #[test]
+    fn an_empty_price_table_is_not_described_as_a_stalled_feed() {
+        let c = PriceCurrency {
+            newest: None,
+            expected: d(21),
+        };
+        assert!(!c.is_current());
+        let alert = c.alert().expect("an empty table must alert");
+        assert!(alert.contains("EMPTY"), "{alert}");
+        assert!(alert.contains("2026-08-21"), "{alert}");
+        assert!(
+            !alert.contains("has not advanced"),
+            "an empty table is not a stalled feed: {alert}"
+        );
     }
 }
