@@ -360,6 +360,14 @@ impl IngestPipeline<'_> {
             }
         };
         self.price_service.clean_up_prices().await?;
+        // Measured here, before the carry-forward below, because this answers
+        // "did the *feed* advance?" - and the carry-forward is our own writing,
+        // not the feed's. It matters in one case: if `price` came out of the
+        // ingest empty, the carry-forward would repopulate it from history and
+        // `newest` would read as an old build rather than `None`, so the
+        // distinct "the price table is EMPTY" alert would silently degrade into
+        // "has not advanced". Reported further down, once every write is done.
+        let currency = self.price_service.price_currency().await?;
         // After the cleanup, never before: that deletes on a global MAX(date)
         // and would wipe exactly the older-dated rows this writes. Running it
         // here also means the carried set is re-derived from scratch each day
@@ -393,7 +401,6 @@ impl IngestPipeline<'_> {
         // retry would turn one skipped build into two alerts a day. The run
         // keeps its exit code; you just get told, once, on the morning it
         // happens rather than inferring it from the damage two days later.
-        let currency = self.price_service.price_currency().await?;
         match currency.alert() {
             None => info!("Price table is up to date."),
             // Built once and used for both sinks, so the log line and the mail
