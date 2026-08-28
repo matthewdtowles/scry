@@ -1,10 +1,22 @@
 use anyhow::Result;
 use bytes::Bytes;
+use chrono::NaiveDate;
 use futures::Stream;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 use tracing::{debug, info};
+
+/// `Meta.json`: `{"meta":{...},"data":{"date":"2026-08-28","version":"..."}}`.
+#[derive(serde::Deserialize)]
+struct MetaEnvelope {
+    data: MetaBody,
+}
+
+#[derive(serde::Deserialize)]
+struct MetaBody {
+    date: NaiveDate,
+}
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -24,6 +36,7 @@ impl HttpClient {
     const TODAY_PRICES_URL: &str = "AllPricesToday.json";
     const ALL_PRICES_URL: &str = "AllPrices.json";
     const CK_PRICELIST_URL: &str = "https://api.cardkingdom.com/api/v2/pricelist";
+    const META_URL: &str = "Meta.json";
 
     pub fn new() -> Self {
         // A bare `Client::new()` has no timeouts, so a stalled CDN connection
@@ -71,6 +84,20 @@ impl HttpClient {
             Self::CK_PRICELIST_URL
         );
         self.fetch_json_bytes_stream(Self::CK_PRICELIST_URL).await
+    }
+
+    /// The build date MTGJSON says it has currently published.
+    ///
+    /// `Meta.json` is ~113 bytes and is the only authoritative answer to "what
+    /// does upstream have right now". Everything else is inference: the
+    /// `Last-Modified` header on the bulk files is NOT when their new content
+    /// starts being served - on 2026-08-28 it read 06:08 UTC while a download
+    /// at 08:03 still returned the previous day's build - and a hardcoded
+    /// publish hour has now been wrong twice.
+    pub async fn fetch_published_build_date(&self) -> Result<NaiveDate> {
+        let url = format!("{}{}", Self::BASE_INGESTION_URL, Self::META_URL);
+        let meta: MetaEnvelope = self.fetch_json(url.as_str()).await?;
+        Ok(meta.data.date)
     }
 
     pub async fn fetch_set_cards<T>(&self, set_code: &str) -> Result<T>
