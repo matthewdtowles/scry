@@ -37,37 +37,52 @@ pub struct PriceCurrency {
 }
 
 impl PriceCurrency {
-    /// True when we hold at least the build upstream reports, or when upstream
-    /// could not be reached (nothing to compare against).
+    /// True when there is nothing to report. Defined in terms of [`Self::alert`]
+    /// so the two can never disagree. They were separate matches and they did
+    /// drift: `is_current` said an empty table was fine whenever upstream
+    /// happened to be unreachable.
     pub fn is_current(&self) -> bool {
-        match (self.newest, self.expected) {
-            (_, None) => true,
-            (Some(newest), Some(expected)) => newest >= expected,
-            (None, Some(_)) => false,
-        }
+        self.alert().is_none()
     }
 
     /// The whole alert line, or `None` when there is nothing to say.
     ///
     /// Returns the complete sentence rather than a fragment a caller prefixes,
     /// so the empty-table case cannot be described as a stale one.
+    ///
+    /// The two conditions are independent, and conflating them is what the
+    /// earlier revision got wrong. Being *behind* needs upstream to compare
+    /// against, so an unreachable `Meta.json` makes it unknowable and it stays
+    /// quiet. An *empty* table needs nothing external - zero prices after a
+    /// completed ingest is broken on its own terms - so it always speaks, and
+    /// says as much as it can about what we should have had.
     pub fn alert(&self) -> Option<String> {
-        if self.is_current() {
-            return None;
+        match self.newest {
+            None => Some(match self.expected {
+                Some(expected) => format!(
+                    "the price table is EMPTY after a completed ingest - upstream reports a \
+                     {expected} build. This is not a late upstream build; no prices are being \
+                     served at all."
+                ),
+                None => "the price table is EMPTY after a completed ingest, and MTGJSON could \
+                         not be reached to say which build we should have had. No prices are \
+                         being served at all."
+                    .to_string(),
+            }),
+            Some(newest) => {
+                // No upstream answer means no way to know whether we are behind.
+                // Alerting on that would be the false alarm this replaced.
+                let expected = self.expected?;
+                if newest >= expected {
+                    return None;
+                }
+                Some(format!(
+                    "the ingest did not pick up the newest MTGJSON build - upstream reports \
+                     {expected} but the price table holds {newest}. The run itself succeeded, \
+                     so this is a stale download rather than a failure; prices are a build behind."
+                ))
+            }
         }
-        let expected = self.expected?;
-        Some(match self.newest {
-            Some(newest) => format!(
-                "the ingest did not pick up the newest MTGJSON build - upstream reports \
-                 {expected} but the price table holds {newest}. The run itself succeeded, \
-                 so this is a stale download rather than a failure; prices are a build behind."
-            ),
-            None => format!(
-                "the price table is EMPTY after a completed ingest - upstream reports a \
-                 {expected} build. This is not a late upstream build; no prices are being \
-                 served at all."
-            ),
-        })
     }
 }
 
@@ -476,6 +491,22 @@ mod currency_tests {
         };
         assert!(c.is_current());
         assert_eq!(c.alert(), None);
+    }
+
+    /// The regression Copilot caught: an empty table is broken on its own
+    /// terms, and must still say so when MTGJSON cannot be reached. Gating it
+    /// on upstream meant the loudest internal failure went silent in exactly
+    /// the circumstances - a network problem - most likely to accompany it.
+    #[test]
+    fn an_empty_price_table_alerts_even_when_upstream_is_unreachable() {
+        let c = PriceCurrency {
+            newest: None,
+            expected: None,
+        };
+        assert!(!c.is_current());
+        let alert = c.alert().expect("an empty table must alert regardless");
+        assert!(alert.contains("EMPTY"), "{alert}");
+        assert!(alert.contains("could not be reached"), "{alert}");
     }
 
     /// An empty table is a different problem from being a build behind, and
