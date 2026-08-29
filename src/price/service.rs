@@ -16,11 +16,12 @@ use tracing::{debug, info, warn};
 /// How our `price` table compares against the build MTGJSON says it has
 /// published.
 ///
-/// `expected` comes from MTGJSON's own `Meta.json`, not from the clock. The
-/// previous version guessed it from a hardcoded publish hour, and that guess
-/// was wrong every single day: the 08:00 UTC ingest was served the previous
-/// day's build, so the check declared "the feed has not advanced" and mailed
-/// about it four mornings running while nothing was actually wrong upstream.
+/// `expected` is read from the head of `AllPricesToday.json` itself - the file
+/// whose contents decide what we store. An earlier version guessed it from a
+/// hardcoded publish hour, and that guess was wrong every single day: the 08:00
+/// UTC ingest was served the previous day's build, so the check declared "the
+/// feed has not advanced" and mailed about it four mornings running while
+/// nothing was actually wrong upstream.
 ///
 /// Asking upstream what it has removes the guess entirely, and inverts what an
 /// alert means. It no longer says "upstream published nothing" - which is
@@ -52,7 +53,7 @@ impl PriceCurrency {
     ///
     /// The two conditions are independent, and conflating them is what the
     /// earlier revision got wrong. Being *behind* needs upstream to compare
-    /// against, so an unreachable `Meta.json` makes it unknowable and it stays
+    /// against, so an unreachable upstream makes it unknowable and it stays
     /// quiet. An *empty* table needs nothing external - zero prices after a
     /// completed ingest is broken on its own terms - so it always speaks, and
     /// says as much as it can about what we should have had.
@@ -333,7 +334,7 @@ impl PriceService {
     /// `clean_up_prices` drops every date but the newest, so `newest` is the
     /// build the last successful ingest actually wrote.
     ///
-    /// A failure reaching `Meta.json` is not an error: it leaves `expected` as
+    /// A failure reading that date is not an error: it leaves `expected` as
     /// `None`, which reads as "cannot tell" and stays silent. Alerting because
     /// we could not check would be the same false alarm this replaced.
     pub async fn price_currency(&self) -> Result<PriceCurrency> {
@@ -498,7 +499,7 @@ mod currency_tests {
         assert_eq!(c.alert(), None);
     }
 
-    /// An unreachable Meta.json means the check could not run. Alerting on
+    /// An unreachable upstream means the check could not run. Alerting on
     /// that would be the same false alarm this design replaced.
     #[test]
     fn an_unreachable_upstream_stays_silent() {

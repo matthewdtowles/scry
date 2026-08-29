@@ -89,15 +89,30 @@ impl HttpClient {
     /// morning for content that was not yet being served.
     pub async fn published_price_build_date(&self) -> Result<NaiveDate> {
         let url = format!("{}{}", Self::BASE_INGESTION_URL, Self::TODAY_PRICES_URL);
-        let head = self
+        let response = self
             .client
             .get(&url)
             .header(reqwest::header::RANGE, "bytes=0-255")
             .send()
             .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
+            .error_for_status()?;
+        // Check the status before touching the body. A server that ignores the
+        // Range header answers 200 with the whole file, and `.bytes()` would
+        // then quietly pull 53MB - hourly, that is over a gigabyte a day to
+        // answer a yes/no question, and it would keep working, so nothing would
+        // ever surface it. Refuse instead: the caller treats an error as
+        // "cannot tell" and skips the run.
+        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            let size = response
+                .content_length()
+                .map_or_else(|| "unknown".to_string(), |n| format!("{n}"));
+            return Err(anyhow::anyhow!(
+                "{url} ignored the Range header: expected 206 Partial Content, got {}. \
+                 Refusing to read the {size}-byte body for a date check.",
+                response.status()
+            ));
+        }
+        let head = response.bytes().await?;
         let head = String::from_utf8_lossy(&head);
         // Deliberately not a JSON parse: the slice is a truncated document by
         // construction, so no parser can accept it. The shape is fixed and
