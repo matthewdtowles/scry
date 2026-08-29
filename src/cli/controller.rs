@@ -138,11 +138,15 @@ impl CliController {
 
     /// The gate in front of the full ingest.
     ///
-    /// Exits the process directly rather than returning a verdict, because
-    /// "we are already current" is not an error and must not be reported as
-    /// one - cron mails stderr, and a daily "up to date" email is exactly the
-    /// noise this whole change exists to stop. Exit codes: 0 new data, 3 already
-    /// current, 1 could not tell.
+    /// Communicates entirely through the exit code: 0 = new data, 3 = already
+    /// current, 1 = could not tell.
+    ///
+    /// Only the "already current" branch exits the process itself, because 3 is
+    /// outside what `main` can express - it returns `Ok`/`Err`, which is 0 or 1.
+    /// The other two branches return normally and take that path. A third code
+    /// is needed because "nothing to do" is neither success worth acting on nor
+    /// an error: cron mails stderr, and a daily "up to date" email is exactly
+    /// the noise this exists to stop.
     ///
     /// Failing closed on error (1, and the caller does not ingest) is
     /// deliberate. If we cannot read the date, running anyway would download

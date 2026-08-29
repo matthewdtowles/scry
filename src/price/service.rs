@@ -313,7 +313,7 @@ impl PriceService {
     }
 
     /// The build date `AllPricesToday.json` is currently serving, read with a
-    /// 200-byte range request rather than a 53MB download.
+    /// 256-byte range request rather than a 53MB download.
     pub async fn published_price_build_date(&self) -> Result<NaiveDate> {
         self.client.published_price_build_date().await
     }

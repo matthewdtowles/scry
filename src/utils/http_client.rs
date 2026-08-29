@@ -77,8 +77,8 @@ impl HttpClient {
     /// The build date carried by `AllPricesToday.json` itself, read without
     /// downloading it.
     ///
-    /// `meta` is the first key in the file, so a 200-byte Range request answers
-    /// "is there new price data?" for ~0.0004% of the 53MB body.
+    /// `meta` is the first key in the file, so a 256-byte Range request answers
+    /// "is there new price data?" for ~0.0005% of the 53MB body.
     ///
     /// This reads the date out of *the file we would actually ingest*, which is
     /// the only one that decides what we end up storing. `Meta.json` is a
