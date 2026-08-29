@@ -311,6 +311,23 @@ impl PriceService {
         Ok(())
     }
 
+    /// The build date `AllPricesToday.json` is currently serving, read with a
+    /// 200-byte range request rather than a 53MB download.
+    pub async fn published_price_build_date(&self) -> Result<NaiveDate> {
+        self.client.published_price_build_date().await
+    }
+
+    /// The newest date in our `price` table, or `None` when it is empty.
+    pub async fn newest_price_date(&self) -> Result<Option<NaiveDate>> {
+        Ok(self
+            .repository
+            .fetch_price_dates()
+            .await?
+            .iter()
+            .max()
+            .copied())
+    }
+
     /// What we hold versus what MTGJSON reports it has published.
     ///
     /// `clean_up_prices` drops every date but the newest, so `newest` is the
@@ -321,10 +338,10 @@ impl PriceService {
     /// we could not check would be the same false alarm this replaced.
     pub async fn price_currency(&self) -> Result<PriceCurrency> {
         let price_dates = self.repository.fetch_price_dates().await?;
-        let expected = match self.client.fetch_published_build_date().await {
+        let expected = match self.client.published_price_build_date().await {
             Ok(date) => Some(date),
             Err(e) => {
-                warn!("Could not read MTGJSON's published build date, skipping the freshness check: {e}");
+                warn!("Could not read the published price build date, skipping the freshness check: {e}");
                 None
             }
         };

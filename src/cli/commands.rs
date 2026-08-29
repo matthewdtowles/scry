@@ -107,6 +107,11 @@ pub enum Commands {
     /// Compute portfolio summaries for all users (portfolio_summary + portfolio_card_performance)
     PortfolioSummary {},
 
+    /// Exit 0 if MTGJSON is serving price data newer than ours, 3 if we are
+    /// already current. Costs one 200-byte range request, so it is cheap enough
+    /// to run hourly as a gate in front of the full ingest.
+    HasNewPrices {},
+
     /// Launch interactive mode with a menu of all available commands
     Interactive {},
 }
