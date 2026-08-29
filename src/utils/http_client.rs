@@ -7,17 +7,6 @@ use serde::de::DeserializeOwned;
 use std::time::Duration;
 use tracing::{debug, info};
 
-/// `Meta.json`: `{"meta":{...},"data":{"date":"2026-08-28","version":"..."}}`.
-#[derive(serde::Deserialize)]
-struct MetaEnvelope {
-    data: MetaBody,
-}
-
-#[derive(serde::Deserialize)]
-struct MetaBody {
-    date: NaiveDate,
-}
-
 #[derive(Clone)]
 pub struct HttpClient {
     client: Client,
@@ -36,7 +25,6 @@ impl HttpClient {
     const TODAY_PRICES_URL: &str = "AllPricesToday.json";
     const ALL_PRICES_URL: &str = "AllPrices.json";
     const CK_PRICELIST_URL: &str = "https://api.cardkingdom.com/api/v2/pricelist";
-    const META_URL: &str = "Meta.json";
 
     pub fn new() -> Self {
         // A bare `Client::new()` has no timeouts, so a stalled CDN connection
@@ -86,18 +74,55 @@ impl HttpClient {
         self.fetch_json_bytes_stream(Self::CK_PRICELIST_URL).await
     }
 
-    /// The build date MTGJSON says it has currently published.
+    /// The build date carried by `AllPricesToday.json` itself, read without
+    /// downloading it.
     ///
-    /// `Meta.json` is ~113 bytes and is the only authoritative answer to "what
-    /// does upstream have right now". Everything else is inference: the
-    /// `Last-Modified` header on the bulk files is NOT when their new content
-    /// starts being served - on 2026-08-28 it read 06:08 UTC while a download
-    /// at 08:03 still returned the previous day's build - and a hardcoded
-    /// publish hour has now been wrong twice.
-    pub async fn fetch_published_build_date(&self) -> Result<NaiveDate> {
-        let url = format!("{}{}", Self::BASE_INGESTION_URL, Self::META_URL);
-        let meta: MetaEnvelope = self.fetch_json(url.as_str()).await?;
-        Ok(meta.data.date)
+    /// `meta` is the first key in the file, so a 256-byte Range request answers
+    /// "is there new price data?" for ~0.0005% of the 53MB body.
+    ///
+    /// This reads the date out of *the file we would actually ingest*, which is
+    /// the only one that decides what we end up storing. `Meta.json` is a
+    /// sibling endpoint and can disagree: on 2026-08-28 a download at 08:03
+    /// returned the previous day's prices, so gating on anything other than
+    /// this file risks fetching 53MB to discover we already had it. The
+    /// `Last-Modified` header is likewise not a signal - it read 06:08 that
+    /// morning for content that was not yet being served.
+    pub async fn published_price_build_date(&self) -> Result<NaiveDate> {
+        let url = format!("{}{}", Self::BASE_INGESTION_URL, Self::TODAY_PRICES_URL);
+        let response = self
+            .client
+            .get(&url)
+            .header(reqwest::header::RANGE, "bytes=0-255")
+            .send()
+            .await?
+            .error_for_status()?;
+        // Check the status before touching the body. A server that ignores the
+        // Range header answers 200 with the whole file, and `.bytes()` would
+        // then quietly pull 53MB - hourly, that is over a gigabyte a day to
+        // answer a yes/no question, and it would keep working, so nothing would
+        // ever surface it. Refuse instead: the caller treats an error as
+        // "cannot tell" and skips the run.
+        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            let size = response
+                .content_length()
+                .map_or_else(|| "unknown".to_string(), |n| format!("{n}"));
+            return Err(anyhow::anyhow!(
+                "{url} ignored the Range header: expected 206 Partial Content, got {}. \
+                 Refusing to read the {size}-byte body for a date check.",
+                response.status()
+            ));
+        }
+        let head = response.bytes().await?;
+        let head = String::from_utf8_lossy(&head);
+        // Deliberately not a JSON parse: the slice is a truncated document by
+        // construction, so no parser can accept it. The shape is fixed and
+        // upstream-controlled - `{"meta":{"date":"YYYY-MM-DD",...`.
+        let date = head
+            .split("\"date\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .ok_or_else(|| anyhow::anyhow!("no meta.date in the first bytes of {url}: {head:?}"))?;
+        Ok(date.parse::<NaiveDate>()?)
     }
 
     pub async fn fetch_set_cards<T>(&self, set_code: &str) -> Result<T>

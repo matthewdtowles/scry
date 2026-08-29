@@ -130,7 +130,43 @@ impl CliController {
                 .await
                 .inspect_err(|e| error!("Portfolio summary computation failed: {}", e)),
 
+            Commands::HasNewPrices {} => self.handle_has_new_prices().await,
+
             Commands::Interactive {} => self.interactive_mode().await,
+        }
+    }
+
+    /// The gate in front of the full ingest.
+    ///
+    /// Communicates entirely through the exit code: 0 = new data, 3 = already
+    /// current, 1 = could not tell.
+    ///
+    /// Only the "already current" branch exits the process itself, because 3 is
+    /// outside what `main` can express - it returns `Ok`/`Err`, which is 0 or 1.
+    /// The other two branches return normally and take that path. A third code
+    /// is needed because "nothing to do" is neither success worth acting on nor
+    /// an error: cron mails stderr, and a daily "up to date" email is exactly
+    /// the noise this exists to stop.
+    ///
+    /// Failing closed on error (1, and the caller does not ingest) is
+    /// deliberate. If we cannot read the date, running anyway would download
+    /// 53MB hourly to rediscover what we already have.
+    async fn handle_has_new_prices(&self) -> Result<()> {
+        let upstream = self.price_service.published_price_build_date().await?;
+        let ours = self.price_service.newest_price_date().await?;
+        match ours {
+            Some(ours) if ours >= upstream => {
+                info!("Already current: upstream is serving {upstream}, we hold {ours}.");
+                std::process::exit(3);
+            }
+            Some(ours) => {
+                info!("New price data: upstream is serving {upstream}, we hold {ours}.");
+                Ok(())
+            }
+            None => {
+                info!("New price data: upstream is serving {upstream}, we hold none.");
+                Ok(())
+            }
         }
     }
 

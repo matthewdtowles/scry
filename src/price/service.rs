@@ -16,11 +16,12 @@ use tracing::{debug, info, warn};
 /// How our `price` table compares against the build MTGJSON says it has
 /// published.
 ///
-/// `expected` comes from MTGJSON's own `Meta.json`, not from the clock. The
-/// previous version guessed it from a hardcoded publish hour, and that guess
-/// was wrong every single day: the 08:00 UTC ingest was served the previous
-/// day's build, so the check declared "the feed has not advanced" and mailed
-/// about it four mornings running while nothing was actually wrong upstream.
+/// `expected` is read from the head of `AllPricesToday.json` itself - the file
+/// whose contents decide what we store. An earlier version guessed it from a
+/// hardcoded publish hour, and that guess was wrong every single day: the 08:00
+/// UTC ingest was served the previous day's build, so the check declared "the
+/// feed has not advanced" and mailed about it four mornings running while
+/// nothing was actually wrong upstream.
 ///
 /// Asking upstream what it has removes the guess entirely, and inverts what an
 /// alert means. It no longer says "upstream published nothing" - which is
@@ -52,7 +53,7 @@ impl PriceCurrency {
     ///
     /// The two conditions are independent, and conflating them is what the
     /// earlier revision got wrong. Being *behind* needs upstream to compare
-    /// against, so an unreachable `Meta.json` makes it unknowable and it stays
+    /// against, so an unreachable upstream makes it unknowable and it stays
     /// quiet. An *empty* table needs nothing external - zero prices after a
     /// completed ingest is broken on its own terms - so it always speaks, and
     /// says as much as it can about what we should have had.
@@ -311,20 +312,37 @@ impl PriceService {
         Ok(())
     }
 
+    /// The build date `AllPricesToday.json` is currently serving, read with a
+    /// 256-byte range request rather than a 53MB download.
+    pub async fn published_price_build_date(&self) -> Result<NaiveDate> {
+        self.client.published_price_build_date().await
+    }
+
+    /// The newest date in our `price` table, or `None` when it is empty.
+    pub async fn newest_price_date(&self) -> Result<Option<NaiveDate>> {
+        Ok(self
+            .repository
+            .fetch_price_dates()
+            .await?
+            .iter()
+            .max()
+            .copied())
+    }
+
     /// What we hold versus what MTGJSON reports it has published.
     ///
     /// `clean_up_prices` drops every date but the newest, so `newest` is the
     /// build the last successful ingest actually wrote.
     ///
-    /// A failure reaching `Meta.json` is not an error: it leaves `expected` as
+    /// A failure reading that date is not an error: it leaves `expected` as
     /// `None`, which reads as "cannot tell" and stays silent. Alerting because
     /// we could not check would be the same false alarm this replaced.
     pub async fn price_currency(&self) -> Result<PriceCurrency> {
         let price_dates = self.repository.fetch_price_dates().await?;
-        let expected = match self.client.fetch_published_build_date().await {
+        let expected = match self.client.published_price_build_date().await {
             Ok(date) => Some(date),
             Err(e) => {
-                warn!("Could not read MTGJSON's published build date, skipping the freshness check: {e}");
+                warn!("Could not read the published price build date, skipping the freshness check: {e}");
                 None
             }
         };
@@ -481,7 +499,7 @@ mod currency_tests {
         assert_eq!(c.alert(), None);
     }
 
-    /// An unreachable Meta.json means the check could not run. Alerting on
+    /// An unreachable upstream means the check could not run. Alerting on
     /// that would be the same false alarm this design replaced.
     #[test]
     fn an_unreachable_upstream_stays_silent() {
