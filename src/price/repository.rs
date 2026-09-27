@@ -59,6 +59,24 @@ impl PriceRepository {
         Ok(rows.into_iter().map(|(date,)| date).collect())
     }
 
+    /// Mark the price build `price_date` as written by a complete ingest.
+    pub async fn record_ingest_completion(&self, price_date: NaiveDate) -> Result<()> {
+        let mut query_builder =
+            QueryBuilder::new("INSERT INTO ingest_completion (price_date) VALUES (");
+        query_builder.push_bind(price_date);
+        query_builder.push(") ON CONFLICT (price_date) DO UPDATE SET completed_at = now()");
+        self.db.execute_query_builder(query_builder).await?;
+        Ok(())
+    }
+
+    /// The newest price build a complete ingest wrote, or `None` if none has.
+    pub async fn newest_completed_ingest_date(&self) -> Result<Option<NaiveDate>> {
+        let query_builder = QueryBuilder::new("SELECT max(price_date) FROM ingest_completion");
+        let rows: Vec<(Option<NaiveDate>,)> =
+            self.db.fetch_all_query_builder(query_builder).await?;
+        Ok(rows.into_iter().next().and_then(|(date,)| date))
+    }
+
     pub async fn save_prices(&self, prices: &[Price]) -> Result<i64> {
         self.save(prices, Self::PRICE_TABLE).await
     }

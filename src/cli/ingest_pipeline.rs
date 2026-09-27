@@ -50,6 +50,9 @@ impl IngestPipeline<'_> {
             warn!("Data reset not confirmed. Aborting ingest.");
             return Ok(());
         }
+        // Only an unflagged `ingest` covers every step, so only it can count as a
+        // complete ingest for the hourly gate. Same test as `handle_ingest`.
+        let full_run = !sets && !cards && !prices && !sealed && set_cards.is_none();
         let mut first_err: Option<anyhow::Error> = None;
         // One date for the whole run, fixed before any work starts: a full
         // ingest can cross UTC midnight, and a run that stamped half its sets
@@ -89,6 +92,20 @@ impl IngestPipeline<'_> {
         } else if let Err(e) = self.post_ingest_updates().await {
             error!("Post ingestion updates failed: {}", e);
             first_err.get_or_insert(e);
+        }
+        // The hourly gate (`has-new-prices`) reads this record, not the price
+        // table, because a failed ingest still writes prices: on 2026-09-25 the
+        // card stream stalled, the price ingest after it succeeded, and the gate
+        // then read "already current" and never retried the day. Recording only
+        // after every step succeeded is what lets a partial failure be retried.
+        if full_run && first_err.is_none() {
+            match self.price_service.record_ingest_completion().await {
+                Ok(()) => info!("Recorded a complete ingest."),
+                Err(e) => {
+                    error!("Failed to record the completed ingest: {}", e);
+                    first_err.get_or_insert(e);
+                }
+            }
         }
         match first_err {
             Some(e) => Err(e),

@@ -284,4 +284,10 @@ CREATE TABLE IF NOT EXISTS sealed_product (
 
 ALTER TABLE sealed_product ADD COLUMN IF NOT EXISTS last_seen DATE;
 
+-- Mirrors web migration 049_ingest_completion.sql.
+CREATE TABLE IF NOT EXISTS ingest_completion (
+    price_date DATE PRIMARY KEY,
+    completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 SELECT pg_advisory_unlock(42);

@@ -443,3 +443,28 @@ async fn test_carry_forward_fills_only_missing_prices_and_keeps_the_observed_dat
     assert_eq!(priced.1, Some(Decimal::try_from(1.25).unwrap()));
     assert_eq!(priced.2, today, "a card priced today must be untouched");
 }
+
+/// The hourly gate compares MTGJSON's build date with the newest build a
+/// complete ingest recorded, so recording must be repeatable (a re-run of the
+/// same build) and the read must return the newest date, not the latest write.
+///
+/// Far-future dates keep this independent of whatever else the shared test
+/// database holds, and of earlier runs of this test.
+#[tokio::test]
+#[ignore]
+async fn test_ingest_completion_records_idempotently_and_reads_the_newest_build() {
+    let db = common::setup_test_db().await;
+    let repo = PriceRepository::new(db.clone());
+    let older = NaiveDate::from_ymd_opt(2999, 12, 30).unwrap();
+    let newer = NaiveDate::from_ymd_opt(2999, 12, 31).unwrap();
+
+    repo.record_ingest_completion(older).await.unwrap();
+    repo.record_ingest_completion(newer).await.unwrap();
+    // Re-recording a build already present must not fail on the primary key.
+    repo.record_ingest_completion(older).await.unwrap();
+
+    assert_eq!(
+        repo.newest_completed_ingest_date().await.unwrap(),
+        Some(newer)
+    );
+}
