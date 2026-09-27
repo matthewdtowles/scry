@@ -64,7 +64,7 @@ impl PriceRepository {
         let mut query_builder =
             QueryBuilder::new("INSERT INTO ingest_completion (price_date) VALUES (");
         query_builder.push_bind(price_date);
-        query_builder.push(") ON CONFLICT (price_date) DO UPDATE SET completed_at = now()");
+        query_builder.push(") ON CONFLICT (price_date) DO UPDATE SET completed_at = NOW()");
         self.db.execute_query_builder(query_builder).await?;
         Ok(())
     }

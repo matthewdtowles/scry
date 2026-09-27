@@ -50,8 +50,10 @@ impl IngestPipeline<'_> {
             warn!("Data reset not confirmed. Aborting ingest.");
             return Ok(());
         }
-        // Only an unflagged `ingest` covers every step, so only it can count as a
-        // complete ingest for the hourly gate. Same test as `handle_ingest`.
+        // Only the default, unflagged `ingest` (what cron runs) is treated as a
+        // complete ingest for the hourly gate. Flags can be combined to run every
+        // step too, but a manual flagged run is not what the gate schedules.
+        // Same test as `do_all` in `handle_ingest`.
         let full_run = !sets && !cards && !prices && !sealed && set_cards.is_none();
         let mut first_err: Option<anyhow::Error> = None;
         // One date for the whole run, fixed before any work starts: a full
