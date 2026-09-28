@@ -151,20 +151,25 @@ impl CliController {
     /// Failing closed on error (1, and the caller does not ingest) is
     /// deliberate. If we cannot read the date, running anyway would download
     /// 53MB hourly to rediscover what we already have.
+    ///
+    /// "Ours" is the newest build a *complete* ingest wrote, not the newest
+    /// date in the price table. A failed ingest can still write prices, and
+    /// comparing against those would read "already current" and never retry
+    /// the rest of the run - which is what happened on 2026-09-25.
     async fn handle_has_new_prices(&self) -> Result<()> {
         let upstream = self.price_service.published_price_build_date().await?;
-        let ours = self.price_service.newest_price_date().await?;
+        let ours = self.price_service.newest_completed_ingest_date().await?;
         match ours {
             Some(ours) if ours >= upstream => {
-                info!("Already current: upstream is serving {upstream}, we hold {ours}.");
+                info!("Already current: upstream is serving {upstream}, the last complete ingest wrote {ours}.");
                 std::process::exit(3);
             }
             Some(ours) => {
-                info!("New price data: upstream is serving {upstream}, we hold {ours}.");
+                info!("New price data: upstream is serving {upstream}, the last complete ingest wrote {ours}.");
                 Ok(())
             }
             None => {
-                info!("New price data: upstream is serving {upstream}, we hold none.");
+                info!("New price data: upstream is serving {upstream}, and no ingest has completed yet.");
                 Ok(())
             }
         }

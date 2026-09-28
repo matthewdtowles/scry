@@ -329,6 +329,24 @@ impl PriceService {
             .copied())
     }
 
+    /// Mark the price build now in the `price` table as written by a complete
+    /// ingest. Only a full ingest in which every step succeeded may call this:
+    /// a failed ingest can still have written prices, and the hourly gate reads
+    /// this record to decide whether to retry.
+    pub async fn record_ingest_completion(&self) -> Result<()> {
+        match self.newest_price_date().await? {
+            Some(date) => self.repository.record_ingest_completion(date).await,
+            None => Err(anyhow::anyhow!(
+                "the ingest reported success but the price table is empty"
+            )),
+        }
+    }
+
+    /// The newest price build a complete ingest wrote, or `None` if none has.
+    pub async fn newest_completed_ingest_date(&self) -> Result<Option<NaiveDate>> {
+        self.repository.newest_completed_ingest_date().await
+    }
+
     /// What we hold versus what MTGJSON reports it has published.
     ///
     /// `clean_up_prices` drops every date but the newest, so `newest` is the
