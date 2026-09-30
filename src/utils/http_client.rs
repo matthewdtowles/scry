@@ -1,11 +1,22 @@
 use anyhow::Result;
 use bytes::Bytes;
 use chrono::NaiveDate;
-use futures::Stream;
-use reqwest::Client;
+use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
+use reqwest::header::{HeaderValue, CONTENT_RANGE, ETAG, IF_RANGE, RANGE};
+use reqwest::{Client, StatusCode};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// How many times one download may reconnect after its connection drops.
+const MAX_RESUMES: u32 = 5;
+/// Wait before each reconnect, multiplied by the attempt number.
+const RESUME_DELAY: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_secs(5)
+};
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -141,6 +152,16 @@ impl HttpClient {
         self.fetch_json(url.as_str()).await
     }
 
+    /// Streams `url`, picking up where it left off if the connection drops.
+    ///
+    /// A dropped connection used to fail the whole ingest. On 2026-09-30
+    /// MTGJSON cut the AllPrintings download off about two minutes in on two
+    /// hourly runs in a row, and each run lost its card update. After a drop
+    /// this asks for the rest of the file with a Range request. `If-Range`
+    /// carries the ETag, so if the file was republished mid-download the server
+    /// sends the whole new file instead, which is refused rather than spliced
+    /// onto the old one. Without an ETag there is no safe resume, so the drop
+    /// fails the download as before.
     async fn fetch_json_bytes_stream(
         &self,
         url: &str,
@@ -148,9 +169,37 @@ impl HttpClient {
         debug!("Fetch JSON Bytes Stream.");
         let response = self.client.get(url).send().await?.error_for_status()?;
         debug!("Received response from: {}", url);
-        let byte_stream = response.bytes_stream();
-        debug!("Returning response byte stream.");
-        Ok(byte_stream)
+        let etag = response.headers().get(ETAG).cloned();
+        let client = self.client.clone();
+        let url = url.to_string();
+        Ok(async_stream::stream! {
+            let mut body: BoxStream<'static, reqwest::Result<Bytes>> =
+                response.bytes_stream().boxed();
+            let mut received: u64 = 0;
+            let mut resumes = 0;
+            loop {
+                match body.next().await {
+                    Some(Ok(chunk)) => {
+                        received += chunk.len() as u64;
+                        yield Ok(chunk);
+                    }
+                    Some(Err(err)) => {
+                        warn!(
+                            "Download of {url} dropped after {received} bytes: {}",
+                            error_chain(&err)
+                        );
+                        match resume(&client, &url, etag.as_ref(), received, &mut resumes).await {
+                            Some(rest) => body = rest,
+                            None => {
+                                yield Err(err);
+                                break;
+                            }
+                        }
+                    }
+                    None => break,
+                }
+            }
+        })
     }
 
     async fn fetch_json<T>(&self, url: &str) -> Result<T>
@@ -165,5 +214,192 @@ impl HttpClient {
             ));
         }
         Ok(response.json::<T>().await?)
+    }
+}
+
+/// Reopens `url` from byte `received`, or returns None when it cannot be done
+/// safely: no ETag, the file changed, or the reconnect budget is spent.
+async fn resume(
+    client: &Client,
+    url: &str,
+    etag: Option<&HeaderValue>,
+    received: u64,
+    resumes: &mut u32,
+) -> Option<BoxStream<'static, reqwest::Result<Bytes>>> {
+    let Some(etag) = etag else {
+        warn!("{url} sent no ETag, so the download cannot be resumed safely.");
+        return None;
+    };
+    while *resumes < MAX_RESUMES {
+        *resumes += 1;
+        tokio::time::sleep(RESUME_DELAY * *resumes).await;
+        let response = match client
+            .get(url)
+            .header(RANGE, format!("bytes={received}-"))
+            .header(IF_RANGE, etag.clone())
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                warn!(
+                    "Resume {}/{MAX_RESUMES} of {url} failed: {}",
+                    *resumes,
+                    error_chain(&err)
+                );
+                continue;
+            }
+        };
+        let starts_at_offset = response
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with(&format!("bytes {received}-")));
+        if response.status() == StatusCode::PARTIAL_CONTENT && starts_at_offset {
+            info!(
+                "Resumed {url} at byte {received} (attempt {}/{MAX_RESUMES}).",
+                *resumes
+            );
+            return Some(response.bytes_stream().boxed());
+        }
+        if response.status() == StatusCode::OK {
+            warn!("{url} changed since the download started, so it cannot be resumed.");
+            return None;
+        }
+        warn!(
+            "Resume {}/{MAX_RESUMES} of {url} got {} instead of the rest of the file.",
+            *resumes,
+            response.status()
+        );
+    }
+    warn!("Gave up on {url} after {MAX_RESUMES} resumes.");
+    None
+}
+
+/// An error and every cause beneath it. reqwest's own message stops at the top
+/// level ("error decoding response body"), which hides whether the connection
+/// was reset, timed out or closed early.
+pub(crate) fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    const BODY: &[u8] = b"[1, 2, 3, 4, 5, 6, 7, 8]";
+    const CUT: usize = 10;
+
+    /// Answers one connection per scripted response, then closes it, and
+    /// returns the request heads it saw.
+    async fn serve(responses: Vec<Vec<u8>>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/AllPrintings.json",
+            listener.local_addr().unwrap()
+        );
+        let handle = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0; 4096];
+                let n = socket.read(&mut buf).await.unwrap();
+                requests.push(String::from_utf8_lossy(&buf[..n]).to_lowercase());
+                socket.write_all(&response).await.unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
+    /// The full-file response, cut off after `CUT` bytes as a dropped connection.
+    fn dropped_after_cut(etag: Option<&str>) -> Vec<u8> {
+        let etag = etag.map_or(String::new(), |e| format!("ETag: {e}\r\n"));
+        let mut r = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{etag}Connection: close\r\n\r\n",
+            BODY.len()
+        )
+        .into_bytes();
+        r.extend_from_slice(&BODY[..CUT]);
+        r
+    }
+
+    fn rest_of_file() -> Vec<u8> {
+        let mut r = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {CUT}-{}/{}\r\nConnection: close\r\n\r\n",
+            BODY.len() - CUT,
+            BODY.len() - 1,
+            BODY.len()
+        )
+        .into_bytes();
+        r.extend_from_slice(&BODY[CUT..]);
+        r
+    }
+
+    /// Everything the stream yielded, and whether it ended in an error.
+    async fn download(url: &str) -> (Vec<u8>, bool) {
+        let stream = HttpClient::new()
+            .fetch_json_bytes_stream(url)
+            .await
+            .unwrap();
+        let mut stream = Box::pin(stream);
+        let mut got = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => got.extend_from_slice(&chunk),
+                Err(_) => return (got, true),
+            }
+        }
+        (got, false)
+    }
+
+    #[tokio::test]
+    async fn resumes_a_dropped_download_from_where_it_stopped() {
+        let (url, server) = serve(vec![dropped_after_cut(Some("\"v1\"")), rest_of_file()]).await;
+
+        let (got, failed) = download(&url).await;
+
+        assert!(!failed);
+        assert_eq!(got, BODY);
+        let requests = server.await.unwrap();
+        assert!(requests[1].contains(&format!("range: bytes={CUT}-")));
+        assert!(requests[1].contains("if-range: \"v1\""));
+    }
+
+    #[tokio::test]
+    async fn refuses_to_splice_a_file_that_changed_mid_download() {
+        let mut republished = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"v2\"\r\nConnection: close\r\n\r\n",
+            BODY.len()
+        )
+        .into_bytes();
+        republished.extend_from_slice(BODY);
+        let (url, server) = serve(vec![dropped_after_cut(Some("\"v1\"")), republished]).await;
+
+        let (got, failed) = download(&url).await;
+
+        assert!(failed);
+        assert_eq!(got, &BODY[..CUT]);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fails_a_drop_without_an_etag_instead_of_guessing() {
+        let (url, server) = serve(vec![dropped_after_cut(None)]).await;
+
+        let (got, failed) = download(&url).await;
+
+        assert!(failed);
+        assert_eq!(got, &BODY[..CUT]);
+        assert_eq!(server.await.unwrap().len(), 1);
     }
 }

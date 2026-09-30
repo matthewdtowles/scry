@@ -88,11 +88,12 @@ where
     ) -> Result<NextEvent> {
         let mut event_result = parser.next_event();
         while let Ok(Some(JsonEvent::NeedMoreInput)) = event_result {
-            parser
-                .feeder
-                .fill_buf()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to read from stream: {}", e))?;
+            parser.feeder.fill_buf().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read from stream: {}",
+                    crate::utils::http_client::error_chain(&e)
+                )
+            })?;
             event_result = parser.next_event();
         }
 
