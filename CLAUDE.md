@@ -131,7 +131,7 @@ src/
 
 ### Key Design Patterns
 
-**Streaming JSON parsing**: Card, sealed-product, and price ingestion use `JsonStreamParser<T, P>` with the `JsonEventProcessor` trait. This streams MTGJSON's bulk data files (~200MB+) through actson without loading them into memory. Each module implements its own `EventProcessor` that emits batches. Cards and sealed products both come from `AllPrintings.json`, so `ingest.rs`'s `CardSealedEventProcessor` tees one stream to both extractors (each tracks its own depth/skip state) to avoid downloading + parsing that file twice.
+**Streaming JSON parsing**: Card, sealed-product, and price ingestion use `JsonStreamParser<T, P>` with the `JsonEventProcessor` trait. Each bulk file is first downloaded, gzip-encoded, to an unnamed temp file (`HttpClient::fetch_json_bytes_stream`; a dropped download is retried from the start, since MTGJSON's CDN cannot resume one), then decoded and streamed from disk through actson without loading it into memory. Streaming straight from the network let slow database saves hold the connection open for minutes, and the CDN reset it. Each module implements its own `EventProcessor` that emits batches. Cards and sealed products both come from `AllPrintings.json`, so `ingest.rs`'s `CardSealedEventProcessor` tees one stream to both extractors (each tracks its own depth/skip state) to avoid downloading + parsing that file twice.
 
 **Dependency injection via constructor**: `main.rs` wires up the dependency graph manually — `ConnectionPool` → services → `CliController`. Services take `Arc<ConnectionPool>` and `Arc<HttpClient>`.
 

@@ -464,7 +464,7 @@ mod tests {
         async fn all_cards_stream(&self) -> Result<ByteStream> {
             let bytes = bytes::Bytes::from(self.0);
             Ok(Box::pin(futures::stream::once(async move {
-                Ok::<_, reqwest::Error>(bytes)
+                Ok::<_, std::io::Error>(bytes)
             })))
         }
         async fn fetch_set_cards(&self, _set_code: &str) -> Result<Value> {

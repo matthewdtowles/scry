@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::pin::Pin;
 
 /// A boxed byte stream, the concrete shape the JSON stream parser consumes.
-pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
+pub type ByteStream = Pin<Box<dyn Stream<Item = std::io::Result<Bytes>> + Send>>;
 
 /// The card catalog data source (MTGJSON). Everything `CardService` needs from
 /// the HTTP client, so a test can feed it a canned `AllPrintings.json` stream.
