@@ -28,10 +28,7 @@ pub struct Set {
 impl Set {
     /// Should this set be filtered out of inclusion in DB?
     pub fn should_filter(&self) -> bool {
-        if self.is_online_only || self.is_foreign_only || self.set_type == "memorabilia" {
-            return true;
-        }
-        false
+        self.is_online_only || self.is_foreign_only || self.set_type == "memorabilia"
     }
 }
 
