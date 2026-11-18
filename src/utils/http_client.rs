@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::de::DeserializeOwned;
 use std::pin::Pin;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncSeekExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio_util::io::ReaderStream;
 use tracing::{info, warn};
 
@@ -97,12 +97,23 @@ impl HttpClient {
     /// this file risks fetching 53MB to discover we already had it. The
     /// `Last-Modified` header is likewise not a signal - it read 06:08 that
     /// morning for content that was not yet being served.
+    ///
+    /// It asks for gzip. When Cloudflare holds the file gzipped, it answers a
+    /// Range request without gzip in `Accept-Encoding` with the whole file
+    /// (200), which failed this check every hour from 2026-11-18; with gzip
+    /// allowed it sends the first bytes of the gzip file (206), which decode to
+    /// the start of the JSON.
     pub async fn published_price_build_date(&self) -> Result<NaiveDate> {
         let url = format!("{}{}", Self::BASE_INGESTION_URL, Self::TODAY_PRICES_URL);
+        self.build_date_of(&url).await
+    }
+
+    async fn build_date_of(&self, url: &str) -> Result<NaiveDate> {
         let response = self
             .client
-            .get(&url)
+            .get(url)
             .header(reqwest::header::RANGE, "bytes=0-255")
+            .header(ACCEPT_ENCODING, "gzip")
             .send()
             .await?
             .error_for_status()?;
@@ -122,7 +133,17 @@ impl HttpClient {
                 response.status()
             ));
         }
+        let gzip = match response.headers().get(CONTENT_ENCODING) {
+            None => false,
+            Some(v) if v == "gzip" => true,
+            Some(other) => bail!("{url} sent an unsupported Content-Encoding: {other:?}"),
+        };
         let head = response.bytes().await?;
+        let head = if gzip {
+            gunzip_prefix(&head).await
+        } else {
+            head.to_vec()
+        };
         let head = String::from_utf8_lossy(&head);
         // Deliberately not a JSON parse: the slice is a truncated document by
         // construction, so no parser can accept it. The shape is fixed and
@@ -251,6 +272,21 @@ impl HttpClient {
 /// An error and every cause beneath it. reqwest's own message stops at the top
 /// level ("error decoding response body"), which hides whether the connection
 /// was reset, timed out or closed early.
+/// Decodes as much as the first bytes of a gzip file hold. A slice of one ends
+/// mid-stream, so the decoder's end-of-file error is expected and ignored.
+async fn gunzip_prefix(bytes: &[u8]) -> Vec<u8> {
+    let mut decoder = GzipDecoder::new(bytes);
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    while let Ok(n) = decoder.read(&mut buf).await {
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+    out
+}
+
 pub(crate) fn error_chain(err: &dyn std::error::Error) -> String {
     let mut out = err.to_string();
     let mut source = err.source();
@@ -266,7 +302,6 @@ pub(crate) fn error_chain(err: &dyn std::error::Error) -> String {
 mod tests {
     use super::*;
     use async_compression::tokio::bufread::GzipEncoder;
-    use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
 
     const BODY: &[u8] = b"[1, 2, 3, 4, 5, 6, 7, 8]";
@@ -373,6 +408,42 @@ mod tests {
             serve(vec![response("Content-Encoding: gzip\r\n", &gz, gz.len())]).await;
 
         assert!(download(&url).await.is_err());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reads_the_build_date_from_the_first_bytes_of_the_gzip_file() {
+        let mut json = r#"{"meta":{"date":"2026-11-18","version":"5.3.0"},"data":{"#.to_string();
+        for i in 0..2000 {
+            json.push_str(&format!(r#""{i:08x}":{{"normal":{}}},"#, i * 7919 % 1000));
+        }
+        let mut gz = gzipped(json.as_bytes()).await;
+        // What `bytes=0-255` returns: the first 256 bytes of a much longer file.
+        assert!(gz.len() > 256);
+        gz.truncate(256);
+        let mut slice = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\n",
+            gz.len()
+        )
+        .into_bytes();
+        slice.extend_from_slice(&gz);
+        let (url, server) = serve(vec![slice]).await;
+
+        let date = HttpClient::new().build_date_of(&url).await.unwrap();
+
+        assert_eq!(date, NaiveDate::from_ymd_opt(2026, 11, 18).unwrap());
+        let request = &server.await.unwrap()[0];
+        assert!(request.contains("range: bytes=0-255"));
+        assert!(request.contains("accept-encoding: gzip"));
+    }
+
+    #[tokio::test]
+    async fn refuses_a_whole_file_answer_to_the_date_check() {
+        let (url, server) = serve(vec![whole_file()]).await;
+
+        let err = HttpClient::new().build_date_of(&url).await.unwrap_err();
+
+        assert!(err.to_string().contains("ignored the Range header"));
         server.await.unwrap();
     }
 }
