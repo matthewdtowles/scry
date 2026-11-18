@@ -422,6 +422,10 @@ ONE-TIME SETUP
             status
         };
         if basic.is_stale() {
+            eprintln!("SUMMARY: Prices are {} days old", basic.price_age_days);
+            eprintln!(
+                "IMPACT: Prices on the site are out of date: no update has finished in over a day."
+            );
             bail!(
                 "Price data is stale: newest price row is {} day(s) old (max {}). \
                  The daily ingest is not completing.",
