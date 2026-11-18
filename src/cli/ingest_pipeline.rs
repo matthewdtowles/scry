@@ -1,4 +1,5 @@
 use crate::cli::confirm_destructive;
+use crate::cli::run_report::{RunReport, Step};
 use crate::ingest::{CardSealedEventProcessor, IngestLedger, IngestRecord};
 use crate::sealed_product::domain::SealedProduct;
 use crate::utils::{clock, JsonStreamParser};
@@ -60,8 +61,18 @@ impl IngestPipeline<'_> {
         // ingest can cross UTC midnight, and a run that stamped half its sets
         // with day N and the rest with N+1 would sweep away its own writes.
         let ledger = Arc::new(IngestLedger::new(clock::today()));
+        let mut report = RunReport::default();
         let ingest_ok = match self
-            .handle_ingest(sets, cards, prices, set_cards, sealed, reset, &ledger)
+            .handle_ingest(
+                sets,
+                cards,
+                prices,
+                set_cards,
+                sealed,
+                reset,
+                &ledger,
+                &mut report,
+            )
             .await
         {
             Ok(()) => true,
@@ -82,18 +93,32 @@ impl IngestPipeline<'_> {
         // as-is for the next run to fix rather than pruning against it.
         if !ingest_ok {
             warn!("Post-ingestion pruning skipped: the ingest failed, so the catalog is incomplete and the prunes would delete cards and sets the ingest simply never reached.");
-        } else if let Err(e) = self.post_ingest_prune(Some(&ledger)).await {
-            error!("Post ingestion pruning failed: {}", e);
-            first_err.get_or_insert(e);
+            report.skipped(Step::Prune, "it runs only after a complete ingest");
+        } else {
+            match self.post_ingest_prune(Some(&ledger)).await {
+                Ok(()) => report.ok(Step::Prune),
+                Err(e) => {
+                    error!("Post ingestion pruning failed: {}", e);
+                    report.failed(Step::Prune, &e);
+                    first_err.get_or_insert(e);
+                }
+            }
         }
         // Updates are recomputations (set sizes, price rollups, snapshots), not
         // deletes, so they still run - but only over a catalog the ingest
         // finished, or they would persist sizes and prices for a partial one.
         if !ingest_ok {
             warn!("Post-ingestion updates skipped: the ingest failed, so set sizes and price rollups would be computed from an incomplete catalog.");
-        } else if let Err(e) = self.post_ingest_updates().await {
-            error!("Post ingestion updates failed: {}", e);
-            first_err.get_or_insert(e);
+            report.skipped(Step::Updates, "they run only after a complete ingest");
+        } else {
+            match self.post_ingest_updates().await {
+                Ok(()) => report.ok(Step::Updates),
+                Err(e) => {
+                    error!("Post ingestion updates failed: {}", e);
+                    report.failed(Step::Updates, &e);
+                    first_err.get_or_insert(e);
+                }
+            }
         }
         // The hourly gate (`has-new-prices`) reads this record, not the price
         // table, because a failed ingest still writes prices: on 2026-09-25 the
@@ -105,12 +130,25 @@ impl IngestPipeline<'_> {
                 Ok(()) => info!("Recorded a complete ingest."),
                 Err(e) => {
                     error!("Failed to record the completed ingest: {}", e);
+                    report.failed(Step::RecordCompletion, &e);
                     first_err.get_or_insert(e);
                 }
             }
+        } else if full_run {
+            report.skipped(
+                Step::RecordCompletion,
+                "so the next hourly run tries the whole update again",
+            );
         }
         match first_err {
-            Some(e) => Err(e),
+            Some(_) => {
+                // The report already carries every step's error, so main's
+                // `Error:` line points at it rather than repeating one of them.
+                eprint!("{}", report.render());
+                Err(anyhow::anyhow!(
+                    "ingest incomplete; see the step summary above"
+                ))
+            }
             None => Ok(()),
         }
     }
@@ -125,13 +163,18 @@ impl IngestPipeline<'_> {
         sealed: bool,
         reset: bool,
         ledger: &Arc<IngestLedger>,
+        report: &mut RunReport,
     ) -> Result<()> {
         let mut first_err: Option<anyhow::Error> = None;
         if reset {
             match self.reset_data().await {
-                Ok(()) => info!("Successfully reset data."),
+                Ok(()) => {
+                    report.ok(Step::Reset);
+                    info!("Successfully reset data.");
+                }
                 Err(e) => {
                     error!("Failed to reset data: {}", e);
+                    report.failed(Step::Reset, &e);
                     first_err.get_or_insert(e);
                 }
             }
@@ -139,9 +182,13 @@ impl IngestPipeline<'_> {
         let do_all = !sets && !cards && !prices && !sealed && set_cards.is_none();
         if do_all || sets {
             match self.update_sets().await {
-                Ok(()) => info!("Successfully updated sets."),
+                Ok(()) => {
+                    report.ok(Step::Sets);
+                    info!("Successfully updated sets.");
+                }
                 Err(e) => {
                     error!("Failed to update sets: {}", e);
+                    report.failed(Step::Sets, &e);
                     first_err.get_or_insert(e);
                 }
             }
@@ -155,27 +202,39 @@ impl IngestPipeline<'_> {
         let do_sealed = do_all || sealed;
         if do_cards && do_sealed {
             match self.ingest_cards_and_sealed(ledger).await {
-                Ok(()) => info!("Card + sealed product ingest completed successfully."),
+                Ok(()) => {
+                    report.ok(Step::CardsAndSealed);
+                    info!("Card + sealed product ingest completed successfully.");
+                }
                 Err(e) => {
                     error!("Card + sealed product ingest failure: {}", e);
+                    report.failed(Step::CardsAndSealed, &e);
                     first_err.get_or_insert(e);
                 }
             }
         } else {
             if do_cards {
                 match self.update_cards(ledger).await {
-                    Ok(()) => info!("Card update completed successfully."),
+                    Ok(()) => {
+                        report.ok(Step::Cards);
+                        info!("Card update completed successfully.");
+                    }
                     Err(e) => {
                         error!("Card update failure: {}", e);
+                        report.failed(Step::Cards, &e);
                         first_err.get_or_insert(e);
                     }
                 }
             }
             if do_sealed {
                 match self.update_sealed_products(ledger).await {
-                    Ok(()) => info!("Sealed product update completed successfully."),
+                    Ok(()) => {
+                        report.ok(Step::Sealed);
+                        info!("Sealed product update completed successfully.");
+                    }
                     Err(e) => {
                         error!("Sealed product update failure: {}", e);
+                        report.failed(Step::Sealed, &e);
                         first_err.get_or_insert(e);
                     }
                 }
@@ -189,9 +248,13 @@ impl IngestPipeline<'_> {
         if !cards {
             if let Some(set_code) = &set_cards {
                 match self.card_service.ingest_set_cards(set_code).await {
-                    Ok(ingested) => info!("{} cards for set code '{}'.", ingested, set_code),
+                    Ok(ingested) => {
+                        report.ok(Step::SetCards);
+                        info!("{} cards for set code '{}'.", ingested, set_code);
+                    }
                     Err(e) => {
                         error!("Error updating cards for set code '{}': {}", set_code, e);
+                        report.failed(Step::SetCards, &e);
                         first_err.get_or_insert(e);
                     }
                 }
@@ -199,9 +262,22 @@ impl IngestPipeline<'_> {
         }
         if do_all || prices {
             match self.update_prices().await {
-                Ok(()) => info!("Price update completed successfully."),
+                Ok(ck_error) => {
+                    info!("Price update completed successfully.");
+                    report.ok(Step::Prices);
+                    match ck_error {
+                        None => report.ok(Step::CardKingdom),
+                        Some(e) => {
+                            report.failed(Step::CardKingdom, &e);
+                            first_err.get_or_insert(e.context(
+                                "CK-direct buylist ingest failed; averaged price/price_history were updated",
+                            ));
+                        }
+                    }
+                }
                 Err(e) => {
                     error!("Price update failure: {}", e);
+                    report.failed(Step::Prices, &e);
                     first_err.get_or_insert(e);
                 }
             }
@@ -357,14 +433,17 @@ impl IngestPipeline<'_> {
         Ok(())
     }
 
-    async fn update_prices(&self) -> Result<()> {
+    /// Refreshes the averaged prices. The best-effort Card Kingdom step's
+    /// failure comes back as `Ok(Some(_))`, so the caller can report it as its
+    /// own step while still exiting non-zero.
+    async fn update_prices(&self) -> Result<Option<anyhow::Error>> {
         let total_prices_before = self.price_service.fetch_price_count().await?;
         let total_history_before = self.price_service.fetch_price_history_count().await?;
         self.price_service.ingest_all_today().await?;
         // CK-direct buylist enrichment (live offers + buy qty) runs AFTER the
         // MTGJSON ingest so it overwrites the indicative CK rows. Best-effort:
         // a failure here must never block the averaged price refresh -- it is
-        // logged and surfaced via a non-zero exit at the end of this fn.
+        // logged and handed back, and the caller turns it into a non-zero exit.
         let ck_error = match self.price_service.ingest_cardkingdom_direct().await {
             Ok(stats) => {
                 info!(
@@ -429,15 +508,7 @@ impl IngestPipeline<'_> {
                 eprintln!("NOTICE: {alert}");
             }
         }
-        // Averaged prices are fully refreshed and cleaned up above; surface any
-        // best-effort CK-direct failure last so the run exits non-zero (alerting)
-        // without having held back the critical path.
-        if let Some(e) = ck_error {
-            return Err(anyhow::anyhow!(
-                "CK-direct buylist ingest failed; averaged price/price_history were updated: {e}"
-            ));
-        }
-        Ok(())
+        Ok(ck_error)
     }
 
     async fn update_sets(&self) -> Result<()> {

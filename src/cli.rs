@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod controller;
 pub mod ingest_pipeline;
+mod run_report;
 
 pub use commands::Commands;
 
