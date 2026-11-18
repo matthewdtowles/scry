@@ -1,21 +1,24 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
+use async_compression::tokio::bufread::GzipDecoder;
 use bytes::Bytes;
 use chrono::NaiveDate;
-use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
-use reqwest::header::{HeaderValue, CONTENT_RANGE, ETAG, IF_RANGE, RANGE};
-use reqwest::{Client, StatusCode};
+use reqwest::header::{ACCEPT_ENCODING, CONTENT_ENCODING};
+use reqwest::Client;
 use serde::de::DeserializeOwned;
+use std::pin::Pin;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tokio::io::{AsyncRead, AsyncSeekExt, AsyncWriteExt, BufReader};
+use tokio_util::io::ReaderStream;
+use tracing::{info, warn};
 
-/// How many times one download may reconnect after its connection drops.
-const MAX_RESUMES: u32 = 5;
-/// Wait before each reconnect, multiplied by the attempt number.
-const RESUME_DELAY: Duration = if cfg!(test) {
+/// How many times one download is tried, from the start, before it fails.
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+/// Wait before each retry, multiplied by the attempt number.
+const RETRY_DELAY: Duration = if cfg!(test) {
     Duration::ZERO
 } else {
-    Duration::from_secs(5)
+    Duration::from_secs(15)
 };
 
 #[derive(Clone)]
@@ -51,9 +54,7 @@ impl HttpClient {
         Self { client }
     }
 
-    pub async fn all_cards_stream(
-        &self,
-    ) -> Result<impl Stream<Item = Result<Bytes, reqwest::Error>>> {
+    pub async fn all_cards_stream(&self) -> Result<impl Stream<Item = std::io::Result<Bytes>>> {
         let url = format!("{}{}", Self::BASE_INGESTION_URL, Self::ALL_CARDS_URL);
         info!("Stream all cards from: {}", url);
         self.fetch_json_bytes_stream(url.as_str()).await
@@ -61,15 +62,13 @@ impl HttpClient {
 
     pub async fn all_today_prices_stream(
         &self,
-    ) -> Result<impl Stream<Item = Result<Bytes, reqwest::Error>>> {
+    ) -> Result<impl Stream<Item = std::io::Result<Bytes>>> {
         let url = format!("{}{}", Self::BASE_INGESTION_URL, Self::TODAY_PRICES_URL);
         info!("Stream all prices from: {}", url);
         self.fetch_json_bytes_stream(url.as_str()).await
     }
 
-    pub async fn all_prices_stream(
-        &self,
-    ) -> Result<impl Stream<Item = Result<Bytes, reqwest::Error>>> {
+    pub async fn all_prices_stream(&self) -> Result<impl Stream<Item = std::io::Result<Bytes>>> {
         let url = format!("{}{}", Self::BASE_INGESTION_URL, Self::ALL_PRICES_URL);
         info!("Stream all historical prices from: {}", url);
         self.fetch_json_bytes_stream(url.as_str()).await
@@ -77,7 +76,7 @@ impl HttpClient {
 
     pub async fn cardkingdom_pricelist_stream(
         &self,
-    ) -> Result<impl Stream<Item = Result<Bytes, reqwest::Error>>> {
+    ) -> Result<impl Stream<Item = std::io::Result<Bytes>>> {
         info!(
             "Stream Card Kingdom pricelist from: {}",
             Self::CK_PRICELIST_URL
@@ -152,54 +151,86 @@ impl HttpClient {
         self.fetch_json(url.as_str()).await
     }
 
-    /// Streams `url`, picking up where it left off if the connection drops.
+    /// Downloads `url` to a temporary file, then streams its JSON from disk.
     ///
-    /// A dropped connection used to fail the whole ingest. On 2026-09-30
-    /// MTGJSON cut the AllPrintings download off about two minutes in on two
-    /// hourly runs in a row, and each run lost its card update. After a drop
-    /// this asks for the rest of the file with a Range request. `If-Range`
-    /// carries the ETag, so if the file was republished mid-download the server
-    /// sends the whole new file instead, which is refused rather than spliced
-    /// onto the old one. Without an ETag there is no safe resume, so the drop
-    /// fails the download as before.
+    /// Streaming straight from the network tied the download to the database:
+    /// the parser stops reading while it saves each batch, so AllPrintings sat
+    /// on an open connection for 8-9 minutes, and MTGJSON's CDN reset it part
+    /// way on 2026-11-16 (17:00, 18:00 UTC) and 2026-11-17 (16:00), failing the
+    /// card update each time. On disk the download runs at network speed, and a
+    /// dropped one is fetched again from the start.
+    ///
+    /// Resuming with a Range request cannot work against MTGJSON: Cloudflare
+    /// marks the full response's ETag weak, which `If-Range` never matches, and
+    /// its ranges index the stored gzip file rather than the JSON it serves.
+    ///
+    /// Every source here sends gzip when asked - a third of the bytes for
+    /// AllPrintings, a tenth for AllPricesToday - and gzip's trailer carries a
+    /// CRC of the content, so a damaged file fails decoding instead of parsing.
     async fn fetch_json_bytes_stream(
         &self,
         url: &str,
-    ) -> Result<impl Stream<Item = Result<Bytes, reqwest::Error>>> {
-        debug!("Fetch JSON Bytes Stream.");
-        let response = self.client.get(url).send().await?.error_for_status()?;
-        debug!("Received response from: {}", url);
-        let etag = response.headers().get(ETAG).cloned();
-        let client = self.client.clone();
-        let url = url.to_string();
-        Ok(async_stream::stream! {
-            let mut body: BoxStream<'static, reqwest::Result<Bytes>> =
-                response.bytes_stream().boxed();
-            let mut received: u64 = 0;
-            let mut resumes = 0;
-            loop {
-                match body.next().await {
-                    Some(Ok(chunk)) => {
-                        received += chunk.len() as u64;
-                        yield Ok(chunk);
-                    }
-                    Some(Err(err)) => {
-                        warn!(
-                            "Download of {url} dropped after {received} bytes: {}",
-                            error_chain(&err)
-                        );
-                        match resume(&client, &url, etag.as_ref(), received, &mut resumes).await {
-                            Some(rest) => body = rest,
-                            None => {
-                                yield Err(err);
-                                break;
-                            }
-                        }
-                    }
-                    None => break,
+    ) -> Result<impl Stream<Item = std::io::Result<Bytes>>> {
+        let mut attempt = 1;
+        let (file, gzip) = loop {
+            match self.download(url).await {
+                Ok(done) => break done,
+                Err(err) if attempt < DOWNLOAD_ATTEMPTS => {
+                    warn!("Download {attempt}/{DOWNLOAD_ATTEMPTS} of {url} failed: {err:#}");
+                    tokio::time::sleep(RETRY_DELAY * attempt).await;
+                    attempt += 1;
+                }
+                Err(err) => {
+                    return Err(err.context(format!(
+                        "giving up on {url} after {DOWNLOAD_ATTEMPTS} attempts"
+                    )))
                 }
             }
-        })
+        };
+        let file = BufReader::new(file);
+        let reader: Pin<Box<dyn AsyncRead + Send>> = if gzip {
+            Box::pin(GzipDecoder::new(file))
+        } else {
+            Box::pin(file)
+        };
+        Ok(ReaderStream::new(reader))
+    }
+
+    /// One attempt at `url`: its body, as sent, in a temporary file rewound to
+    /// the start, and whether that body is gzip. The file has no name, so the
+    /// OS removes it once it is closed, however scry exits.
+    async fn download(&self, url: &str) -> Result<(tokio::fs::File, bool)> {
+        let response = self
+            .client
+            .get(url)
+            .header(ACCEPT_ENCODING, "gzip")
+            .send()
+            .await?
+            .error_for_status()?;
+        let gzip = match response.headers().get(CONTENT_ENCODING) {
+            None => false,
+            Some(v) if v == "gzip" => true,
+            Some(other) => bail!("{url} sent an unsupported Content-Encoding: {other:?}"),
+        };
+        let expected = response.content_length();
+        let mut file = tokio::fs::File::from_std(tempfile::tempfile()?);
+        let mut received: u64 = 0;
+        let mut body = response.bytes_stream();
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.with_context(|| format!("{url} dropped after {received} bytes"))?;
+            file.write_all(&chunk).await?;
+            received += chunk.len() as u64;
+        }
+        if let Some(expected) = expected.filter(|&n| n != received) {
+            bail!("{url} ended after {received} of {expected} bytes");
+        }
+        file.flush().await?;
+        file.rewind().await?;
+        info!(
+            "Downloaded {url}: {received} bytes{}.",
+            if gzip { " (gzip)" } else { "" }
+        );
+        Ok((file, gzip))
     }
 
     async fn fetch_json<T>(&self, url: &str) -> Result<T>
@@ -215,65 +246,6 @@ impl HttpClient {
         }
         Ok(response.json::<T>().await?)
     }
-}
-
-/// Reopens `url` from byte `received`, or returns None when it cannot be done
-/// safely: no ETag, the file changed, or the reconnect budget is spent.
-async fn resume(
-    client: &Client,
-    url: &str,
-    etag: Option<&HeaderValue>,
-    received: u64,
-    resumes: &mut u32,
-) -> Option<BoxStream<'static, reqwest::Result<Bytes>>> {
-    let Some(etag) = etag else {
-        warn!("{url} sent no ETag, so the download cannot be resumed safely.");
-        return None;
-    };
-    while *resumes < MAX_RESUMES {
-        *resumes += 1;
-        tokio::time::sleep(RESUME_DELAY * *resumes).await;
-        let response = match client
-            .get(url)
-            .header(RANGE, format!("bytes={received}-"))
-            .header(IF_RANGE, etag.clone())
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(err) => {
-                warn!(
-                    "Resume {}/{MAX_RESUMES} of {url} failed: {}",
-                    *resumes,
-                    error_chain(&err)
-                );
-                continue;
-            }
-        };
-        let starts_at_offset = response
-            .headers()
-            .get(CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.starts_with(&format!("bytes {received}-")));
-        if response.status() == StatusCode::PARTIAL_CONTENT && starts_at_offset {
-            info!(
-                "Resumed {url} at byte {received} (attempt {}/{MAX_RESUMES}).",
-                *resumes
-            );
-            return Some(response.bytes_stream().boxed());
-        }
-        if response.status() == StatusCode::OK {
-            warn!("{url} changed since the download started, so it cannot be resumed.");
-            return None;
-        }
-        warn!(
-            "Resume {}/{MAX_RESUMES} of {url} got {} instead of the rest of the file.",
-            *resumes,
-            response.status()
-        );
-    }
-    warn!("Gave up on {url} after {MAX_RESUMES} resumes.");
-    None
 }
 
 /// An error and every cause beneath it. reqwest's own message stops at the top
@@ -293,7 +265,8 @@ pub(crate) fn error_chain(err: &dyn std::error::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use async_compression::tokio::bufread::GzipEncoder;
+    use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
 
     const BODY: &[u8] = b"[1, 2, 3, 4, 5, 6, 7, 8]";
@@ -321,85 +294,85 @@ mod tests {
         (url, handle)
     }
 
+    fn response(headers: &str, body: &[u8], content_length: usize) -> Vec<u8> {
+        let mut r = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {content_length}\r\n{headers}Connection: close\r\n\r\n"
+        )
+        .into_bytes();
+        r.extend_from_slice(body);
+        r
+    }
+
+    fn whole_file() -> Vec<u8> {
+        response("", BODY, BODY.len())
+    }
+
     /// The full-file response, cut off after `CUT` bytes as a dropped connection.
-    fn dropped_after_cut(etag: Option<&str>) -> Vec<u8> {
-        let etag = etag.map_or(String::new(), |e| format!("ETag: {e}\r\n"));
-        let mut r = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{etag}Connection: close\r\n\r\n",
-            BODY.len()
-        )
-        .into_bytes();
-        r.extend_from_slice(&BODY[..CUT]);
-        r
+    fn dropped_after_cut() -> Vec<u8> {
+        response("", &BODY[..CUT], BODY.len())
     }
 
-    fn rest_of_file() -> Vec<u8> {
-        let mut r = format!(
-            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {CUT}-{}/{}\r\nConnection: close\r\n\r\n",
-            BODY.len() - CUT,
-            BODY.len() - 1,
-            BODY.len()
-        )
-        .into_bytes();
-        r.extend_from_slice(&BODY[CUT..]);
-        r
+    async fn gzipped(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        GzipEncoder::new(data).read_to_end(&mut out).await.unwrap();
+        out
     }
 
-    /// Everything the stream yielded, and whether it ended in an error.
-    async fn download(url: &str) -> (Vec<u8>, bool) {
-        let stream = HttpClient::new()
-            .fetch_json_bytes_stream(url)
-            .await
-            .unwrap();
+    /// Everything the stream yielded, or the error that ended it.
+    async fn download(url: &str) -> Result<Vec<u8>> {
+        let stream = HttpClient::new().fetch_json_bytes_stream(url).await?;
         let mut stream = Box::pin(stream);
         let mut got = Vec::new();
-        while let Some(item) = stream.next().await {
-            match item {
-                Ok(chunk) => got.extend_from_slice(&chunk),
-                Err(_) => return (got, true),
-            }
+        while let Some(chunk) = stream.next().await {
+            got.extend_from_slice(&chunk?);
         }
-        (got, false)
+        Ok(got)
     }
 
     #[tokio::test]
-    async fn resumes_a_dropped_download_from_where_it_stopped() {
-        let (url, server) = serve(vec![dropped_after_cut(Some("\"v1\"")), rest_of_file()]).await;
+    async fn downloads_again_from_the_start_after_a_drop() {
+        let (url, server) = serve(vec![dropped_after_cut(), whole_file()]).await;
 
-        let (got, failed) = download(&url).await;
+        let got = download(&url).await.unwrap();
 
-        assert!(!failed);
         assert_eq!(got, BODY);
         let requests = server.await.unwrap();
-        assert!(requests[1].contains(&format!("range: bytes={CUT}-")));
-        assert!(requests[1].contains("if-range: \"v1\""));
+        assert_eq!(requests.len(), 2);
+        assert!(!requests[1].contains("range:"));
     }
 
     #[tokio::test]
-    async fn refuses_to_splice_a_file_that_changed_mid_download() {
-        let mut republished = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"v2\"\r\nConnection: close\r\n\r\n",
-            BODY.len()
-        )
-        .into_bytes();
-        republished.extend_from_slice(BODY);
-        let (url, server) = serve(vec![dropped_after_cut(Some("\"v1\"")), republished]).await;
+    async fn gives_up_after_the_last_attempt() {
+        let drops = vec![dropped_after_cut(); DOWNLOAD_ATTEMPTS as usize];
+        let (url, server) = serve(drops).await;
 
-        let (got, failed) = download(&url).await;
+        let err = download(&url).await.unwrap_err();
 
-        assert!(failed);
-        assert_eq!(got, &BODY[..CUT]);
+        assert!(format!("{err:#}").contains("giving up"));
+        assert_eq!(server.await.unwrap().len(), DOWNLOAD_ATTEMPTS as usize);
+    }
+
+    #[tokio::test]
+    async fn asks_for_gzip_and_decodes_it() {
+        let gz = gzipped(BODY).await;
+        let (url, server) =
+            serve(vec![response("Content-Encoding: gzip\r\n", &gz, gz.len())]).await;
+
+        let got = download(&url).await.unwrap();
+
+        assert_eq!(got, BODY);
+        assert!(server.await.unwrap()[0].contains("accept-encoding: gzip"));
+    }
+
+    #[tokio::test]
+    async fn fails_a_damaged_gzip_file_instead_of_parsing_it() {
+        let mut gz = gzipped(BODY).await;
+        let crc = gz.len() - 8;
+        gz[crc] ^= 0xff;
+        let (url, server) =
+            serve(vec![response("Content-Encoding: gzip\r\n", &gz, gz.len())]).await;
+
+        assert!(download(&url).await.is_err());
         server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn fails_a_drop_without_an_etag_instead_of_guessing() {
-        let (url, server) = serve(vec![dropped_after_cut(None)]).await;
-
-        let (got, failed) = download(&url).await;
-
-        assert!(failed);
-        assert_eq!(got, &BODY[..CUT]);
-        assert_eq!(server.await.unwrap().len(), 1);
     }
 }
